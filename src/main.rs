@@ -43,6 +43,13 @@ fn main() {
         }
         Some(cli::Command::Index(args)) => cli::index::run(args),
         Some(cli::Command::Map(args)) => cli::map::run(args),
+        Some(cli::Command::Digest(args)) => {
+            let config = workflow::digest::DigestConfig {
+                enzyme: args.enzyme,
+                reference: args.reference,
+            };
+            workflow::digest::digest(&config, &args.chromsizes, &args.output).map(|_| ())
+        }
         Some(cli::Command::Clean(args)) => cli::postprocess::clean(args),
         Some(cli::Command::Matrix(args)) => cli::postprocess::matrix(args),
         Some(cli::Command::Version) => {

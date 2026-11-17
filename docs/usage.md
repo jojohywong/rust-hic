@@ -422,8 +422,8 @@ digest:
 `Arima` expands to the MboI + HinfI cocktail. Any built-in enzyme name can be
 used, for example `HindIII` or `EcoRI`; join names with `-` for a cocktail, for
 example `MboI-HinfI`. The built-in table is generated from Biopython's
-`Bio.Restriction` and contains 754 single-cut enzymes. Unknown names, and
-enzymes whose Biopython cut offsets are not integers, are rejected; supply a
+`Bio.Restriction` and contains 754 enzymes, including enzymes with two cuts per
+recognition site. Unknown or unsupported names are rejected; supply a
 precomputed fragment BED for those. Enzyme names are matched case-insensitively;
 a typo or unsupported name fails preflight.
 
@@ -436,6 +436,20 @@ used for local testing, the Arima BED matches runHiC's byte for byte. This does
 not establish equivalence for every possible reference or enzyme chemistry.
 Digest timing and fragment counts are written to `logs/digest.log` and the
 `digest_done` event in `events.jsonl`.
+For all automatic digests, including Arima, the JSON report uses
+`restriction.mode: digest` and records the configured name in
+`restriction.enzyme`. Releases before 0.4.0 used `arima_digest` for Arima;
+consumers of the JSON report should use the new value.
+
+To generate a reusable fragment BED without starting a workflow:
+
+```sh
+rust-hic digest --reference hg38.fa --chromsizes hg38.chrom.sizes \
+  --enzyme MboI-HinfI --output hg38.fragments.bed
+```
+
+The output must not already exist. Use the resulting file with `fragments:` in
+future configurations, keeping it matched to the reference and enzyme mixture.
 
 Alternatively, provide a precomputed fragment BED:
 

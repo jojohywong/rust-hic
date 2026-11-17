@@ -23,7 +23,6 @@ fn restriction_label(restriction: &super::Restriction) -> String {
             Some(enzyme) => format!("In-silico digest ({enzyme})"),
             None => "In-silico digest".into(),
         },
-        "arima_digest" => "Arima digest".into(),
         "bed" => "Provided fragment BED".into(),
         _ => "Disabled".into(),
     }
@@ -403,7 +402,6 @@ mod tests {
         assert_eq!(label("digest", Some("MboI")), "In-silico digest (MboI)");
         assert_eq!(label("digest", Some("Arima")), "In-silico digest (Arima)");
         assert_eq!(label("digest", None), "In-silico digest");
-        assert_eq!(label("arima_digest", None), "Arima digest");
         assert_eq!(label("bed", None), "Provided fragment BED");
         assert_eq!(label("disabled", None), "Disabled");
     }

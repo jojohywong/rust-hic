@@ -52,6 +52,10 @@ pub fn resolve(c: &mut DigestConfig, base: &Path) -> Result<()> {
 pub fn digest(c: &DigestConfig, sizes: &Path, output: &Path) -> Result<DigestStats> {
     let enzymes = restriction::parse_spec(&c.enzyme)
         .map_err(|e| anyhow!("unsupported digest enzyme list '{}': {e}", c.enzyme))?;
+    let reverse_sites: Vec<Vec<u8>> = enzymes
+        .iter()
+        .map(|e| e.site.bytes().rev().map(complement).collect())
+        .collect();
     let max_site = enzymes
         .iter()
         .map(|enzyme| enzyme.site.len())
@@ -126,18 +130,29 @@ pub fn digest(c: &DigestConfig, sizes: &Path, output: &Path) -> Result<DigestSta
                 base.make_ascii_uppercase();
                 window.rotate_left(1);
                 window[max_site - 1] = base;
-                for enzyme in &enzymes {
+                for (enzyme, reverse_site) in enzymes.iter().zip(&reverse_sites) {
                     let site_len = enzyme.site.len();
                     if pos + 1 >= site_len as u64 {
                         let start = pos as i64 + 1 - site_len as i64;
                         let site_window = &window[max_site - site_len..];
-                        if matches(enzyme.site.as_bytes(), site_window) {
-                            let cut = start + i64::from(enzyme.fst5) + 1;
+                        let forward = matches(enzyme.site.as_bytes(), site_window);
+                        let reverse = !forward
+                            && reverse_site.as_slice() != enzyme.site.as_bytes()
+                            && matches(reverse_site, site_window);
+                        let offsets = if forward {
+                            [Some(enzyme.fst5), enzyme.scd5]
+                        } else if reverse {
+                            [Some(-enzyme.fst3), enzyme.scd3.map(|n| -n)]
+                        } else {
+                            [None, None]
+                        };
+                        for offset in offsets.into_iter().flatten() {
+                            let cut = start + i64::from(offset) + 1;
                             let crick = cut - i64::from(enzyme.ovhg);
                             let chrom_len = chroms[i].1 as i64;
                             if cut > 1 && cut <= chrom_len && crick > 1 && crick <= chrom_len {
                                 let boundary = cut + 1;
-                                if boundary <= chrom_len {
+                                if boundary < chrom_len {
                                     chroms[i].2.push(boundary as u64);
                                 }
                             }
@@ -150,15 +165,19 @@ pub fn digest(c: &DigestConfig, sizes: &Path, output: &Path) -> Result<DigestSta
     }
     finish(current, pos, &mut chroms)?;
 
+    for (name, _, _, found) in &chroms {
+        if !found {
+            bail!("chromosome {name} missing from FASTA")
+        }
+    }
+
     let mut out = BufWriter::with_capacity(
         1024 * 1024,
         File::options().write(true).create_new(true).open(output)?,
     );
-    for (name, len, cuts, found) in &mut chroms {
-        if !*found {
-            bail!("chromosome {name} missing from FASTA")
-        }
+    for (name, len, cuts, _) in &mut chroms {
         cuts.sort_unstable();
+        cuts.dedup();
         let mut prev = 0;
         for &cut in cuts.iter() {
             if cut > *len {
@@ -178,6 +197,27 @@ pub fn digest(c: &DigestConfig, sizes: &Path, output: &Path) -> Result<DigestSta
         fragments: cuts + chromosomes as u64,
         elapsed_seconds: started.elapsed().as_secs_f64(),
     })
+}
+
+fn complement(base: u8) -> u8 {
+    match base.to_ascii_uppercase() {
+        b'A' => b'T',
+        b'C' => b'G',
+        b'G' => b'C',
+        b'T' | b'U' => b'A',
+        b'R' => b'Y',
+        b'Y' => b'R',
+        b'S' => b'S',
+        b'W' => b'W',
+        b'K' => b'M',
+        b'M' => b'K',
+        b'B' => b'V',
+        b'D' => b'H',
+        b'H' => b'D',
+        b'V' => b'B',
+        b'N' => b'N',
+        _ => b'?',
+    }
 }
 
 fn base_mask(base: u8) -> u8 {
