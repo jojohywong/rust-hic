@@ -1,5 +1,10 @@
 # Core tests
 
+`tests/test_digest_biopython.py` compares the Rust digest command with
+Biopython's `Bio.Restriction` across the embedded enzyme table, including both
+orientations and double-cut enzymes. It requires Biopython for testing only and
+uses `RUST_HIC_BIN` to select the executable.
+
 The suite exercises the public commands with a deterministic miniature dataset:
 
 1. **FASTQ index:** verify the default and three-chunk indexes, checking that

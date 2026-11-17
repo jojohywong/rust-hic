@@ -97,3 +97,9 @@ be regenerated with `python3 tests/data/generate.py`; see `tests/README.md`.
 
 The processing stages run as internal invocations of the same executable; they
 are not separate programs to install.
+
+The restriction enzyme definitions are maintained in
+`data/restriction-enzymes.tsv` and embedded in the executable. The table was
+derived from Biopython's `Bio.Restriction`; see the table header for versions.
+Biopython is used only for optional differential tests and is not a build or
+runtime dependency.

@@ -106,6 +106,8 @@ pub(crate) enum Command {
         )
     )]
     Map(MapArgs),
+    /// Generate a reusable restriction fragment BED from a FASTA reference.
+    Digest(DigestArgs),
     /// Sort, filter and deduplicate pairs.
     #[command(
         after_help = examples_help(
@@ -125,6 +127,22 @@ pub(crate) enum Command {
     /// Show version information.
     #[command(after_help = examples_help("", "  rust-hic version"))]
     Version,
+}
+
+#[derive(Args)]
+pub(crate) struct DigestArgs {
+    /// Uncompressed reference FASTA.
+    #[arg(short, long)]
+    pub reference: PathBuf,
+    /// Chromosome sizes (names and lengths).
+    #[arg(long)]
+    pub chromsizes: PathBuf,
+    /// Enzyme name, Arima, or hyphen-separated enzyme names.
+    #[arg(short, long)]
+    pub enzyme: String,
+    /// New output BED file; existing files are not overwritten.
+    #[arg(short, long)]
+    pub output: PathBuf,
 }
 
 #[derive(Args)]

@@ -133,7 +133,8 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertIn('enzyme: Arima', resolved)
         self.assertIn('sample1.pairs', resolved)
         report = json.loads(layout.qc(self.work / 'new-result', 'report.json').read_text())
-        self.assertEqual(report['restriction']['mode'], 'arima_digest')
+        self.assertEqual(report['restriction']['mode'], 'digest')
+        self.assertEqual(report['restriction']['enzyme'], 'Arima')
         self.assertEqual(report['restriction']['stats']['input_records'],
                          report['counts']['pairs_before_restriction'])
         self.assertIsNone(report['counts']['input_read_pairs'])
