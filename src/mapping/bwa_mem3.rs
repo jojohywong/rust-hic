@@ -242,15 +242,27 @@ fn align_batch(
             bail!("bwa-mem3 emitted incomplete paired alignment")
         }
         let name = std::str::from_utf8(&p.name).context("FASTQ read name is not UTF-8")?;
-        sam::write_pair(
-            name,
-            &mut a,
-            &mut b,
-            &mut out,
-            &mut counts,
-            c.sam.max_molecule_size,
-            c.sam.max_inter_align_gap,
-        )?;
+        if c.sam.walks_policy == "all" {
+            sam::write_pair_all(
+                name,
+                &mut a,
+                &mut b,
+                &mut out,
+                &mut counts,
+                c.sam.max_molecule_size,
+                c.sam.max_inter_align_gap,
+            )?;
+        } else {
+            sam::write_pair(
+                name,
+                &mut a,
+                &mut b,
+                &mut out,
+                &mut counts,
+                c.sam.max_molecule_size,
+                c.sam.max_inter_align_gap,
+            )?;
+        }
     }
     Ok(Done {
         data: out,

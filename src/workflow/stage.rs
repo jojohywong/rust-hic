@@ -14,6 +14,7 @@ pub(crate) fn dispatch(invoked: &std::ffi::OsStr) -> bool {
         Stage::MergePairs => pairs::merge::main(),
         Stage::MergeRanges => pairs::merge_ranges::main(),
         Stage::FilterPairs => pairs::filter::main(),
+        Stage::SelectPairs => pairs::select::main(),
         Stage::DedupPairs => pairs::dedup::main(),
         Stage::PairsStats => pairs::stats::main(),
         Stage::BinPairs => matrix::bin_pairs::main(),

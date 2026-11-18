@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-type Group = (String, String, u8, u8);
+type Group = (String, String, u8, u8, String);
 #[derive(Clone)]
 struct Pair {
     line: String,
@@ -21,6 +21,7 @@ struct Pair {
     s1: u8,
     s2: u8,
     kind: Range<usize>,
+    cell: Option<Range<usize>>,
 }
 impl Pair {
     fn parse(line: String, format: Format) -> Result<Self> {
@@ -44,6 +45,11 @@ impl Pair {
             let start = field.as_ptr() as usize - line.as_ptr() as usize;
             start..start + field.len()
         };
+        let cell = if format == Format::Cell {
+            Some(range(f[8]))
+        } else {
+            None
+        };
         Ok(Self {
             c1: range(f[1]),
             c2: range(f[3]),
@@ -52,6 +58,7 @@ impl Pair {
             s1: f[5].as_bytes()[0],
             s2: f[6].as_bytes()[0],
             kind: range(f[7]),
+            cell,
             line,
         })
     }
@@ -61,6 +68,10 @@ impl Pair {
             self.line[self.c2.clone()].to_owned(),
             self.s1,
             self.s2,
+            self.cell
+                .as_ref()
+                .map(|r| self.line[r.clone()].to_owned())
+                .unwrap_or_default(),
         )
     }
     fn key(&self) -> (&str, &str, i64, i64, &str) {
@@ -71,6 +82,9 @@ impl Pair {
             self.p2,
             &self.line[self.kind.clone()],
         )
+    }
+    fn valid(&self) -> bool {
+        matches!(&self.line[self.kind.clone()], "UU" | "UR" | "RU")
     }
 }
 fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -108,6 +122,7 @@ struct Batch {
     local_output: Vec<u8>,
     local_carry: VecDeque<Pair>,
     local_duplicates: u64,
+    input_selected: u64,
 }
 fn neighbors(coords: &Coords, p: &Pair, mismatch: i64) -> Vec<usize> {
     let Some((min, max)) = coords.range else {
@@ -139,10 +154,18 @@ fn neighbors(coords: &Coords, p: &Pair, mismatch: i64) -> Vec<usize> {
     found
 }
 fn prepare(lines: Vec<String>, format: Format, mismatch: i64) -> Result<Batch> {
-    let rows: Vec<Pair> = lines
-        .into_iter()
-        .map(|line| Pair::parse(line, format))
-        .collect::<Result<_>>()?;
+    // pairtools dedup drops rows with an unmapped end (`!`/0) but keeps all
+    // mapped pair types (MM, DD, ...). Only coordinate-less rows are removed;
+    // pair-type selection happens later.
+    let mut rows = Vec::with_capacity(lines.len());
+    for line in lines {
+        let f = format.fields(&line)?;
+        if f[1] == "!" || f[3] == "!" || f[2] == "0" || f[4] == "0" {
+            continue;
+        }
+        rows.push(Pair::parse(line, format)?);
+    }
+    let input_selected = rows.iter().filter(|p| p.valid()).count() as u64;
     for w in rows.windows(2) {
         if w[0].key() > w[1].key() {
             bail!("input not sorted")
@@ -180,6 +203,7 @@ fn prepare(lines: Vec<String>, format: Format, mismatch: i64) -> Result<Batch> {
         local_output,
         local_carry,
         local_duplicates,
+        input_selected,
     })
 }
 fn process(
@@ -189,6 +213,11 @@ fn process(
     mismatch: i64,
 ) -> Result<(u64, u64, bool)> {
     let n = batch.rows.len();
+    // An empty batch (possible with a filtered stream) must not reset the
+    // carry: duplicates can span the gap.
+    if n == 0 {
+        return Ok((0, 0, false));
+    }
     let mut touches = false;
     'outer: for p in carry.iter() {
         if let Some(coords) = batch.groups.get(&p.group()) {
@@ -325,7 +354,7 @@ fn run() -> Result<()> {
     let mut pending = BTreeMap::new();
     let mut next = 0;
     let mut carry = VecDeque::new();
-    let (mut total, mut dup) = (0, 0);
+    let (mut total, mut dup, mut input_selected) = (0, 0, 0);
     let mut reconciled = 0u64;
     let mut previous: Option<Pair> = None;
     let (mut result_wait, mut ordered_time) = (0.0, 0.0);
@@ -344,6 +373,7 @@ fn run() -> Result<()> {
                 }
             }
             previous = batch.rows.last().cloned();
+            input_selected += batch.input_selected;
             let (n, d, touched) = process(batch, &mut carry, &mut out, mismatch)?;
             reconciled += u64::from(touched);
             total += n;
@@ -370,7 +400,7 @@ fn run() -> Result<()> {
         worker_send += c;
     }
     out.flush()?;
-    eprintln!("event=dedup_done input_records={total} duplicates={dup} output_records={} elapsed_seconds={:.3}",total-dup,start.elapsed().as_secs_f64());
+    eprintln!("event=dedup_done input_records={total} input_selected={input_selected} duplicates={dup} output_records={} elapsed_seconds={:.3}",total-dup,start.elapsed().as_secs_f64());
     eprintln!("event=timing reader_permit_wait={permit_wait:.3} reader_read={read_time:.3} reader_send_wait={send_wait:.3} worker_wait_sum={worker_wait:.3} worker_compute_sum={worker_compute:.3} worker_send_wait_sum={worker_send:.3} ordered_wait={result_wait:.3} ordered_process={ordered_time:.3}");
     eprintln!("event=boundary_stats batches={next} reconciled_batches={reconciled}");
     Ok(())
@@ -379,5 +409,81 @@ pub(crate) fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_barcodes_partition_duplicate_groups() {
+        let lines = vec![
+            "r1\tchr1\t100\tchr1\t200\t+\t-\tUU\tAAAA\n".to_string(),
+            "r3\tchr1\t100\tchr1\t200\t+\t-\tUU\tCCCC\n".to_string(),
+            "r2\tchr1\t101\tchr1\t201\t+\t-\tUU\tAAAA\n".to_string(),
+        ];
+        let batch = prepare(lines, Format::Cell, 3).unwrap();
+        assert_eq!(batch.local_duplicates, 1);
+        let output = String::from_utf8(batch.local_output).unwrap();
+        assert!(output.contains("r1\t"));
+        assert!(output.contains("r3\t"));
+        assert!(!output.contains("r2\t"));
+    }
+
+    #[test]
+    fn no_cell_column_keeps_global_dedup() {
+        let lines = vec![
+            "r1\tchr1\t100\tchr1\t200\t+\t-\tUU\n".to_string(),
+            "r3\tchr1\t100\tchr1\t200\t+\t-\tUU\n".to_string(),
+        ];
+        let batch = prepare(lines, Format::Standard, 3).unwrap();
+        assert_eq!(batch.local_duplicates, 1);
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    fn lines(rows: &[&str]) -> Vec<String> {
+        rows.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn mapped_types_are_retained_and_unmapped_dropped() {
+        let b = prepare(
+            lines(&[
+                "u\tchr1\t100\tchr1\t200\t+\t-\tUU\n",
+                "m\tchr1\t300\tchr1\t400\t+\t-\tMM\n",
+                "d\tchr1\t500\tchr1\t600\t+\t-\tDD\n",
+                "n\t!\t0\t!\t0\t-\t-\tNN\n",
+            ]),
+            Format::Standard,
+            3,
+        )
+        .unwrap();
+        let out = String::from_utf8(b.local_output).unwrap();
+        assert!(out.contains("\tUU\n"));
+        assert!(out.contains("\tMM\n"));
+        assert!(out.contains("\tDD\n"));
+        assert!(!out.contains("\tNN\n"));
+    }
+
+    #[test]
+    fn empty_batch_preserves_carry() {
+        let first = prepare(
+            lines(&["u\tchr1\t100\tchr1\t200\t+\t-\tUU\n"]),
+            Format::Standard,
+            3,
+        )
+        .unwrap();
+        let mut carry = first.local_carry.clone();
+        let before = carry.len();
+        let empty = prepare(Vec::new(), Format::Standard, 3).unwrap();
+        let mut out = Vec::new();
+        process(empty, &mut carry, &mut out, 3).unwrap();
+        assert_eq!(carry.len(), before);
+        assert!(out.is_empty());
     }
 }

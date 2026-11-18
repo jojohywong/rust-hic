@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Differential checks against pairtools' default scipy dedup backend."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -92,6 +93,44 @@ class PairtoolsDedup(unittest.TestCase):
                     expected = run([PAIRTOOLS, 'dedup', '--max-mismatch', str(mismatch)], data)
                     self.assertEqual(actual, expected)
             self.assertEqual(run([str(stage), '2', '3'], data), run([PAIRTOOLS, 'dedup'], data))
+
+
+class MixedPairTypes(unittest.TestCase):
+    def test_filter_keeps_mapped_types_then_selection_restricts_output(self):
+        """dedup clusters MM/DD like pairtools; selection is a separate stage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / 'chrom.sizes').write_text('chr1\t10000\nchr2\t10000\n')
+            (tmp / 'frags.bed').write_text(
+                'chr1\t0\t100\nchr1\t100\t200\nchr1\t200\t300\n'
+                'chr1\t300\t400\nchr2\t0\t100\nchr2\t100\t200\n')
+            (tmp / 'in.pairs').write_text(
+                HEADER
+                + 'u1\tchr1\t50\tchr1\t250\t+\t-\tUU\n'
+                + 'm1\tchr1\t150\tchr1\t350\t+\t-\tMM\n'
+                + 'd1\tchr2\t50\tchr2\t150\t+\t-\tDD\n'
+                + 'sf\tchr1\t50\tchr1\t60\t+\t-\tMM\n'
+                + 'n1\t!\t0\t!\t0\t-\t-\tNN\n'
+                + 't1\tchr1\t150\tchr2\t50\t-\t+\tUR\n')
+            (tmp / 'run.yaml').write_text(
+                'assembly: test\nchromsizes: chrom.sizes\nfragments: frags.bed\n'
+                'input_pairs:\n  - in.pairs\noutput_dir: out\nscratch_dir: .\n'
+                'keep_pairs: true\nresolutions: [10]\nbalance_max_iterations: 1\n')
+            result = subprocess.run([str(BIN), 'run', str(tmp / 'run.yaml')],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            final = [line for line in layout.pairs(tmp / 'out')
+                     .read_text().splitlines() if not line.startswith('#')]
+            self.assertEqual([line.split('\t')[0] for line in final], ['u1', 't1'])
+            self.assertEqual([line.split('\t')[7] for line in final], ['UU', 'UR'])
+            qc = tmp / 'out' / 'qc'
+            fstats = json.loads((qc / 'in.filter-stats.json').read_text())
+            self.assertEqual((fstats['input_records'], fstats['retained_records']), (5, 4))
+            self.assertEqual(fstats['retained_selected'], 2)
+            sstats = json.loads((qc / 'in.select-stats.json').read_text())
+            self.assertEqual((sstats['input_records'], sstats['output_records'],
+                              sstats['removed_records']), (4, 2, 2))
+            self.assertEqual(sstats['removed_by_type'], {'DD': 1, 'MM': 1})
 
 
 if __name__ == '__main__':

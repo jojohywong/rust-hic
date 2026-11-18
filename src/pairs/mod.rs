@@ -4,6 +4,7 @@ pub(crate) mod format;
 pub(crate) mod merge;
 pub(crate) mod merge_ranges;
 pub(crate) mod merge_runs;
+pub(crate) mod select;
 pub(crate) mod sort;
 pub(crate) mod stats;
 

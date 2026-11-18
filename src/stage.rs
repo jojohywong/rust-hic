@@ -21,6 +21,7 @@ define_stages! {
     MergePairs => "merge_pairs",
     MergeRanges => "merge_pair_ranges",
     FilterPairs => "filter_pairs",
+    SelectPairs => "select_pairs",
     DedupPairs => "dedup_pairs",
     PairsStats => "pairs_stats",
     BinPairs => "bin_pairs",

@@ -134,22 +134,30 @@ fn run() -> Result<()> {
             let v = format.fields(&line)?;
             let p1: u64 = v[2].parse()?;
             let p2: u64 = v[4].parse()?;
-            let a = *order
-                .get(v[1])
-                .with_context(|| format!("unknown chromosome {}", v[1]))?;
-            let b = *order
-                .get(v[3])
-                .with_context(|| format!("unknown chromosome {}", v[3]))?;
-            if p1 == 0
-                || p2 == 0
-                || p1 > chroms[a].1
-                || p2 > chroms[b].1
-                || !["+", "-"].contains(&v[5])
-                || !["+", "-"].contains(&v[6])
+            if (v[1] != "!" && !order.contains_key(v[1]))
+                || (v[3] != "!" && !order.contains_key(v[3]))
             {
-                bail!("invalid pair coordinates or strands")
+                bail!("unknown chromosome {} or {}", v[1], v[3])
+            }
+            let a = order.get(v[1]).copied();
+            let b = order.get(v[3]).copied();
+            let known = a.is_some() && b.is_some() && p1 > 0 && p2 > 0;
+            if known {
+                let (ia, ib) = (a.unwrap(), b.unwrap());
+                if p1 > chroms[ia].1 || p2 > chroms[ib].1 {
+                    bail!("invalid pair coordinates")
+                }
+            }
+            if !["+", "-"].contains(&v[5]) || !["+", "-"].contains(&v[6]) {
+                bail!("invalid pair strands")
             };
-            let flip = (a, p1) > (b, p2);
+            // Unmapped (`!`) and contigs absent from the sizes file are kept and
+            // sorted without flipping, matching pairtools.
+            let flip = if known {
+                (a.unwrap(), p1) > (b.unwrap(), p2)
+            } else {
+                false
+            };
             let (c1, x, c2, y, s1, s2) = if flip {
                 (v[3], p2, v[1], p1, v[6], v[5])
             } else {
@@ -175,6 +183,9 @@ fn run() -> Result<()> {
                     normalized.push('\t');
                     normalized.push_str(field);
                 }
+            } else if format == Format::Cell {
+                normalized.push('\t');
+                normalized.push_str(v[8]);
             }
             normalized.push('\n');
             size += normalized.len();

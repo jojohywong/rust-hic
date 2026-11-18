@@ -105,7 +105,9 @@ class CoreTests(unittest.TestCase):
         expected = pair_rows(self.work / 'bwa.pairs')
         actual = pair_rows(self.work / 'builtin.pairs')
         self.assertEqual(actual, expected, 'BWA-MEM2 differs')
-        self.assertEqual(len(actual), 1020)
+        # `map` emits every parsed pair, including unmapped ends, matching
+        # pairtools parse; filtering happens in later stages.
+        self.assertEqual(len(actual), 1024)
         self.assertEqual(sum(line.startswith('#columns:') for line in
                              (self.work / 'builtin.pairs').read_text().splitlines()), 1)
         run(*common, '--chunk', '1', '-o', self.work / 'single.pairs')

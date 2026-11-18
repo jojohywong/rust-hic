@@ -295,6 +295,21 @@ where
     let total: u64 = out.iter().map(|x| x.2).sum();
     let manifest: serde_json::Value =
         serde_json::from_reader(File::open(index.join("manifest.json"))?)?;
+    let total_input = if chunk.is_some() {
+        total
+    } else {
+        out.iter().try_fold(0u64, |sum, (i, _, _)| -> Result<u64> {
+            let path = logs.join(format!("align-{i:04}-stats.json"));
+            let value: serde_json::Value = serde_json::from_reader(
+                File::open(&path).with_context(|| format!("open {}", path.display()))?,
+            )?;
+            let input = value
+                .get("input_pairs")
+                .and_then(|x| x.as_u64())
+                .with_context(|| format!("missing input_pairs in {}", path.display()))?;
+            sum.checked_add(input).context("input pair count overflow")
+        })?
+    };
     for expected in [
         manifest.get("pairs").and_then(|x| x.as_u64()),
         c.expected_pairs,
@@ -303,8 +318,8 @@ where
     .flatten()
     .filter(|_| chunk.is_none())
     {
-        if total != expected {
-            bail!("aligner read {total} pairs but expected {expected}")
+        if total_input != expected {
+            bail!("aligner read {total_input} pairs but expected {expected}")
         }
     }
     eprintln!(
