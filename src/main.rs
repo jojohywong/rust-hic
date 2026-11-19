@@ -2,6 +2,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod cli;
+mod droplet;
 mod fastq_index;
 mod mapping;
 mod matrix;
@@ -38,6 +39,16 @@ fn main() {
             })
             .map_err(Into::into),
         Some(cli::Command::Run(args)) => cli::run::execute(*args),
+        Some(cli::Command::Droplet(args)) => {
+            if args.mode == cli::DropletMode::Slurm {
+                droplet::slurm::submit(&args.config, args.slurm, args.check, args.keep_bam)
+            } else {
+                droplet::run(&args.config, args.check, args.keep_bam, args.prepass_only)
+            }
+        }
+        Some(cli::Command::DropletSlurmTask { phase, plan, chunk }) => {
+            droplet::slurm::task(&phase, &plan, chunk)
+        }
         Some(cli::Command::ParseSam(args)) => cli::parse::run(args),
         Some(cli::Command::SlurmTask { phase, work, chunk }) => {
             workflow::slurm::task(&phase, &work, chunk)

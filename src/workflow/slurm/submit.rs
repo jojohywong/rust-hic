@@ -18,12 +18,12 @@ use std::{
 
 const WORK_PREFIX: &str = "rust-hic-slurm-";
 
-fn shell_quote(value: &OsStr) -> Result<String> {
+pub(crate) fn shell_quote(value: &OsStr) -> Result<String> {
     let value = value.to_str().context("Slurm script paths must be UTF-8")?;
     Ok(format!("'{}'", value.replace('\'', "'\\''")))
 }
 
-fn log_pattern(path: &Path) -> Result<String> {
+pub(crate) fn log_pattern(path: &Path) -> Result<String> {
     let parent = path
         .parent()
         .context("Slurm log has no parent directory")?
@@ -40,10 +40,17 @@ fn log_pattern(path: &Path) -> Result<String> {
     Ok(format!("{parent}/{name}"))
 }
 
-fn script(work: &Path, phase: &str, array: bool) -> Result<PathBuf> {
-    let path = work.join(format!("slurm-{phase}.sh"));
-    let exe = shell_quote(work.join("rust-hic").as_os_str())?;
-    let work = shell_quote(work.as_os_str())?;
+/// Write a Slurm task wrapper that re-executes this binary for one phase.
+pub(crate) fn write_task_script(
+    path: &Path,
+    exe: &Path,
+    command: &str,
+    phase: &str,
+    arg: &Path,
+    array: bool,
+) -> Result<()> {
+    let exe = shell_quote(exe.as_os_str())?;
+    let arg = shell_quote(arg.as_os_str())?;
     let chunk = if array {
         " \"${SLURM_ARRAY_TASK_ID:?missing array task id}\""
     } else {
@@ -52,16 +59,29 @@ fn script(work: &Path, phase: &str, array: bool) -> Result<PathBuf> {
     let mut f = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)?;
+        .open(path)?;
     writeln!(
         f,
-        "#!/bin/sh\nset -eu\nexec {exe} slurm-task {phase} {work}{chunk}"
+        "#!/bin/sh\nset -eu\nexec {exe} {command} {phase} {arg}{chunk}"
     )?;
     f.flush()?;
+    Ok(())
+}
+
+fn script(work: &Path, phase: &str, array: bool) -> Result<PathBuf> {
+    let path = work.join(format!("slurm-{phase}.sh"));
+    write_task_script(
+        &path,
+        &work.join("rust-hic"),
+        "slurm-task",
+        phase,
+        work,
+        array,
+    )?;
     Ok(path)
 }
 
-fn validate_extra_args(args: &[String]) -> Result<()> {
+pub(crate) fn validate_extra_args(args: &[String]) -> Result<()> {
     const MANAGED: &[&str] = &[
         "--array",
         "--dependency",
@@ -192,11 +212,12 @@ impl JobStage {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // One scheduler request assembled from stage settings.
-fn sbatch(
+/// Submit one job using the bulk pipeline's scheduler conventions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sbatch_named(
     args: &SlurmOptions,
-    stage: JobStage,
-    group_id: &str,
+    name: &str,
+    description: &str,
     log: &Path,
     cpus: usize,
     mem: &str,
@@ -204,8 +225,8 @@ fn sbatch(
     dependency: Option<&str>,
     array: Option<&str>,
     script: &Path,
+    no_requeue: bool,
 ) -> Result<String> {
-    let name = stage.name(group_id);
     let mut cmd = Command::new("sbatch");
     cmd.arg("--parsable")
         .arg(format!("--job-name={name}"))
@@ -233,8 +254,8 @@ fn sbatch(
     }
     cmd.args(&args.sbatch_arg);
     // The final job writes several outputs and cannot safely resume in place.
-    // Index and map tasks can rerun using their atomic completion markers.
-    if matches!(stage, JobStage::Finish) {
+    // Index and chunk tasks can rerun using their atomic completion markers.
+    if no_requeue {
         cmd.arg("--no-requeue");
     }
     cmd.arg(script);
@@ -244,7 +265,7 @@ fn sbatch(
     if !output.status.success() {
         bail!(
             "sbatch failed for {} ({name}): {}",
-            stage.description(),
+            description,
             String::from_utf8_lossy(&output.stderr).trim()
         )
     }
@@ -256,7 +277,7 @@ fn sbatch(
     Ok(id.to_owned())
 }
 
-fn name_array_tasks(array_id: &str, group_id: &str, chunks: usize) -> Result<()> {
+pub(crate) fn name_array_tasks(array_id: &str, group_id: &str, chunks: usize) -> Result<()> {
     for chunk in 0..chunks {
         let output = Command::new("scontrol")
             .arg("update")
@@ -274,7 +295,7 @@ fn name_array_tasks(array_id: &str, group_id: &str, chunks: usize) -> Result<()>
     Ok(())
 }
 
-fn release_array(array_id: &str) -> Result<()> {
+pub(crate) fn release_array(array_id: &str) -> Result<()> {
     let output = Command::new("scontrol")
         .arg("release")
         .arg(array_id)
@@ -289,7 +310,7 @@ fn release_array(array_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cancel_submitted(jobs: &[String]) -> Result<()> {
+pub(crate) fn cancel_submitted(jobs: &[String]) -> Result<()> {
     let output = Command::new("scancel")
         .args(jobs)
         .output()
@@ -298,6 +319,34 @@ fn cancel_submitted(jobs: &[String]) -> Result<()> {
         bail!("{}", String::from_utf8_lossy(&output.stderr).trim())
     }
     Ok(())
+}
+
+fn sbatch(
+    args: &SlurmOptions,
+    stage: JobStage,
+    group_id: &str,
+    log: &Path,
+    cpus: usize,
+    mem: &str,
+    time: &str,
+    dependency: Option<&str>,
+    array: Option<&str>,
+    script: &Path,
+) -> Result<String> {
+    let name = stage.name(group_id);
+    sbatch_named(
+        args,
+        &name,
+        stage.description(),
+        log,
+        cpus,
+        mem,
+        time,
+        dependency,
+        array,
+        script,
+        matches!(stage, JobStage::Finish),
+    )
 }
 
 pub(crate) fn submit(

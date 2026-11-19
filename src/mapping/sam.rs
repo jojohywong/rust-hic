@@ -588,11 +588,154 @@ fn emit_all<W: Write>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_all_cb<W: Write>(
+    name: &str,
+    a: &mut Vec<Alignment>,
+    b: &mut Vec<Alignment>,
+    out: &mut W,
+    counts: &mut Counts,
+    max_molecule: i64,
+    max_gap: i64,
+    cell: &str,
+) -> Result<()> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    counts.input_pairs += 1;
+    let left = normalize(std::mem::take(a), max_gap);
+    let right = normalize(std::mem::take(b), max_gap);
+    for (x, y) in walk_pairs(left, right, max_molecule) {
+        writeln!(
+            out,
+            "{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}",
+            x.chrom,
+            x.pos,
+            y.chrom,
+            y.pos,
+            x.strand,
+            y.strand,
+            x.kind,
+            y.kind,
+            if cell.is_empty() { "." } else { cell }
+        )?;
+        if matches!((x.kind, y.kind), ('U', 'U') | ('U', 'R') | ('R', 'U')) {
+            counts.selected_pairs += 1;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default, Debug, serde::Serialize)]
 pub struct Counts {
     pub input_pairs: u64,
     pub selected_pairs: u64,
 }
+/// Convert SAM records to 9-column pairs, taking the cell barcode from `CB:Z`
+/// tags written by the droplet stamper. Unassigned records use `.`.
+pub fn convert_cb<R: BufRead, W: Write>(
+    input: R,
+    mut out: W,
+    min_mapq: u8,
+    max_molecule: i64,
+    max_gap: i64,
+) -> Result<Counts> {
+    if min_mapq == 0 || max_molecule < 0 || max_gap < 0 {
+        bail!("invalid parsing thresholds")
+    }
+    writeln!(out,"## pairs format v1.0.0\n#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type CB")?;
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    let mut name = String::new();
+    let mut cell = String::new();
+    let mut counts = Counts::default();
+    let mut body = false;
+    for (i, line) in input.lines().enumerate() {
+        let line = line.with_context(|| format!("read SAM line {}", i + 1))?;
+        if line.starts_with('@') && !body {
+            continue;
+        }
+        body = true;
+        let f: Vec<_> = line.split('\t').collect();
+        if f.len() < 11 || f[0].is_empty() || f[0] == "*" {
+            bail!("invalid SAM record on line {}", i + 1)
+        }
+        if f[0] != name {
+            emit_cb(
+                &name,
+                &mut a,
+                &mut b,
+                &mut out,
+                &mut counts,
+                max_molecule,
+                max_gap,
+                &cell,
+            )?;
+            name.clear();
+            name.push_str(f[0]);
+            cell.clear();
+        }
+        if let Some(tag) = f[11..].iter().find_map(|t| t.strip_prefix("CB:Z:")) {
+            cell.clear();
+            cell.push_str(tag);
+        }
+        let (first, aln) =
+            parse_alignment(&f, min_mapq).with_context(|| format!("SAM line {}", i + 1))?;
+        if first {
+            a.push(aln)
+        } else {
+            b.push(aln)
+        }
+    }
+    emit_cb(
+        &name,
+        &mut a,
+        &mut b,
+        &mut out,
+        &mut counts,
+        max_molecule,
+        max_gap,
+        &cell,
+    )?;
+    out.flush()?;
+    Ok(counts)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_cb<W: Write>(
+    name: &str,
+    a: &mut Vec<Alignment>,
+    b: &mut Vec<Alignment>,
+    out: &mut W,
+    counts: &mut Counts,
+    max_molecule: i64,
+    max_gap: i64,
+    cell: &str,
+) -> Result<()> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    counts.input_pairs += 1;
+    if let Some((x, y)) = classify(std::mem::take(a), std::mem::take(b), max_molecule, max_gap) {
+        writeln!(
+            out,
+            "{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}\t{}",
+            x.chrom,
+            x.pos,
+            y.chrom,
+            y.pos,
+            x.strand,
+            y.strand,
+            x.kind,
+            y.kind,
+            if cell.is_empty() { "." } else { cell }
+        )?;
+        if matches!((x.kind, y.kind), ('U', 'U') | ('U', 'R') | ('R', 'U')) {
+            counts.selected_pairs += 1;
+        }
+    }
+    Ok(())
+}
+
 fn emit<W: Write>(
     name: &str,
     a: &mut Vec<Alignment>,
@@ -745,6 +888,74 @@ pub fn convert_all<R: BufRead, W: Write>(
         &mut counts,
         max_molecule,
         max_gap,
+    )?;
+    out.flush()?;
+    Ok(counts)
+}
+
+/// Multi-way (`all`) parse with the trailing CB column.
+pub fn convert_all_cb<R: BufRead, W: Write>(
+    input: R,
+    mut out: W,
+    min_mapq: u8,
+    max_molecule: i64,
+    max_gap: i64,
+) -> Result<Counts> {
+    if min_mapq == 0 || max_molecule < 0 || max_gap < 0 {
+        bail!("invalid parsing thresholds")
+    }
+    writeln!(out,"## pairs format v1.0.0\n#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type CB")?;
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    let mut name = String::new();
+    let mut cell = String::new();
+    let mut counts = Counts::default();
+    let mut body = false;
+    for (i, line) in input.lines().enumerate() {
+        let line = line.with_context(|| format!("read SAM line {}", i + 1))?;
+        if line.starts_with('@') && !body {
+            continue;
+        }
+        body = true;
+        let f: Vec<_> = line.split('\t').collect();
+        if f.len() < 11 || f[0].is_empty() || f[0] == "*" {
+            bail!("invalid SAM record on line {}", i + 1)
+        }
+        if f[0] != name {
+            emit_all_cb(
+                &name,
+                &mut a,
+                &mut b,
+                &mut out,
+                &mut counts,
+                max_molecule,
+                max_gap,
+                &cell,
+            )?;
+            name.clear();
+            name.push_str(f[0]);
+            cell.clear();
+        }
+        if let Some(tag) = f[11..].iter().find_map(|t| t.strip_prefix("CB:Z:")) {
+            cell.clear();
+            cell.push_str(tag);
+        }
+        let (first, aln) =
+            parse_alignment(&f, min_mapq).with_context(|| format!("SAM line {}", i + 1))?;
+        if first {
+            a.push(aln)
+        } else {
+            b.push(aln)
+        }
+    }
+    emit_all_cb(
+        &name,
+        &mut a,
+        &mut b,
+        &mut out,
+        &mut counts,
+        max_molecule,
+        max_gap,
+        &cell,
     )?;
     out.flush()?;
     Ok(counts)
@@ -956,6 +1167,36 @@ mod all_policy_tests {
     }
 
     #[test]
+    fn chimeric_read_emits_multiple_contacts_and_cb() {
+        let sam = format!(
+            "@SQ\tSN:chr1\tLN:1000000\n{}{}{}",
+            rec("r1", 65, 1000, "100M"),
+            rec("r1", 2113, 5000, "100M"),
+            rec("r1", 129, 10000, "100M")
+        );
+        let mut out = Vec::new();
+        let counts = convert_all_cb(Cursor::new(sam), &mut out, 1, 750, 20).unwrap();
+        assert_eq!(counts.input_pairs, 1);
+        assert!(counts.selected_pairs >= 2, "got {}", counts.selected_pairs);
+        let body: Vec<_> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(body.len() as u64, counts.selected_pairs);
+        let unique: std::collections::HashSet<_> = body.iter().collect();
+        assert_eq!(unique.len(), body.len(), "duplicate contact rows emitted");
+        for row in &body {
+            let f: Vec<_> = row.split('\t').collect();
+            assert_eq!(f.len(), 9);
+            assert_eq!(f[8], "AAAACCCCGGGGTTTT");
+            assert_ne!(f[1], "!");
+            assert_ne!(f[3], "!");
+        }
+    }
+
+    #[test]
     fn unmapped_reads_emit_nn_like_pairtools() {
         let sam = format!(
             "@SQ\tSN:chr1\tLN:1000000\n{}{}",
@@ -973,5 +1214,46 @@ mod all_policy_tests {
             .map(str::to_owned)
             .collect();
         assert!(body[0].ends_with("\tNN"), "{}", body[0]);
+    }
+}
+
+#[cfg(test)]
+mod droplet_cb_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn cb_tag_becomes_ninth_pairs_column() {
+        let sam = concat!(
+            "@HD\tVN:1.6\n",
+            "@SQ\tSN:chr1\tLN:1000000\n",
+            "r1\t65\tchr1\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\tCB:Z:AAAACCCCGGGGTTTT\n",
+            "r1\t129\tchr1\t200\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\tCB:Z:AAAACCCCGGGGTTTT\n"
+        );
+        let mut out = Vec::new();
+        let counts = convert_cb(Cursor::new(sam), &mut out, 1, 750, 20).unwrap();
+        assert_eq!(counts.input_pairs, 1);
+        assert_eq!(counts.selected_pairs, 1);
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("#columns: readID chrom1 pos1 chrom2 pos2 strand1 strand2 pair_type CB")
+        );
+        let body: Vec<_> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].split('\t').nth(8), Some("AAAACCCCGGGGTTTT"));
+    }
+
+    #[test]
+    fn missing_cb_becomes_dot() {
+        let sam = concat!(
+            "@SQ\tSN:chr1\tLN:1000000\n",
+            "r1\t65\tchr1\t100\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n",
+            "r1\t129\tchr1\t200\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+        );
+        let mut out = Vec::new();
+        convert_cb(Cursor::new(sam), &mut out, 1, 750, 20).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let body: Vec<_> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(body[0].split('\t').nth(8), Some("."));
     }
 }

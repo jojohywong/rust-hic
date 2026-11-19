@@ -9,10 +9,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(super) const SCHEMA: u32 = 1;
+pub(crate) const SCHEMA: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Plan {
+pub(crate) struct Plan {
     pub(super) schema: u32,
     pub(super) run_id: String,
     pub(super) output: PathBuf,
@@ -24,19 +24,19 @@ pub(super) struct Plan {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Jobs {
-    pub(super) schema: u32,
-    pub(super) run_id: String,
+pub(crate) struct Jobs {
+    pub(crate) schema: u32,
+    pub(crate) run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) group_id: Option<String>,
-    pub(super) chunks: usize,
-    pub(super) index: Option<String>,
-    pub(super) alignment: Option<String>,
-    pub(super) finish: Option<String>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) chunks: usize,
+    pub(crate) index: Option<String>,
+    pub(crate) alignment: Option<String>,
+    pub(crate) finish: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct IndexDone {
+pub(crate) struct IndexDone {
     pub(super) schema: u32,
     pub(super) run_id: String,
     pub(super) chunks: usize,
@@ -46,7 +46,7 @@ pub(super) struct IndexDone {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct ChunkDone {
+pub(crate) struct ChunkDone {
     pub(super) schema: u32,
     pub(super) run_id: String,
     pub(super) chunk: usize,
@@ -58,13 +58,13 @@ pub(super) struct ChunkDone {
     pub(super) bam_bytes: Option<u64>,
 }
 
-pub(super) fn now_ms() -> Result<u64> {
+pub(crate) fn now_ms() -> Result<u64> {
     Ok(u64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)
 }
 
-pub(super) fn hash_file(path: &Path) -> Result<String> {
+pub(crate) fn hash_file(path: &Path) -> Result<String> {
     let mut f =
         BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     let mut hasher = Sha256::new();
@@ -79,7 +79,7 @@ pub(super) fn hash_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(super) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().context("missing JSON parent directory")?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     serde_json::to_writer_pretty(&mut tmp, value)?;
@@ -90,13 +90,13 @@ pub(super) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     serde_json::from_reader(File::open(path).with_context(|| format!("open {}", path.display()))?)
         .with_context(|| format!("parse {}", path.display()))
 }
 
 /// Read a failure record even if a retry removes its path concurrently.
-pub(super) fn read_failure(out: &Path) -> Result<Option<serde_json::Value>> {
+pub(crate) fn read_failure(out: &Path) -> Result<Option<serde_json::Value>> {
     let path = out.join("failure.json");
     let file = match File::open(&path) {
         Ok(file) => file,
@@ -109,7 +109,7 @@ pub(super) fn read_failure(out: &Path) -> Result<Option<serde_json::Value>> {
 }
 
 /// Clear only an earlier failure of the phase that is being retried.
-pub(super) fn clear_failure(out: &Path, phase: &str) -> Result<()> {
+pub(crate) fn clear_failure(out: &Path, phase: &str) -> Result<()> {
     let path = out.join("failure.json");
     let record = match read_failure(out)? {
         Some(record) => record,
@@ -125,7 +125,7 @@ pub(super) fn clear_failure(out: &Path, phase: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn record_failure(out: &Path, phase: &str, error: &anyhow::Error) {
+pub(crate) fn record_failure(out: &Path, phase: &str, error: &anyhow::Error) {
     let path = out.join("failure.json");
     let Ok(mut file) = tempfile::NamedTempFile::new_in(out) else {
         return;

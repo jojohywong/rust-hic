@@ -8,7 +8,7 @@ use std::{
     io::{self, Write},
 };
 
-fn parse_chunk_size(value: &std::ffi::OsStr) -> Result<u64> {
+pub(crate) fn parse_chunk_size(value: &std::ffi::OsStr) -> Result<u64> {
     let value = value.to_str().context("invalid chunk size")?.trim();
     let split = value
         .find(|c: char| !c.is_ascii_digit())

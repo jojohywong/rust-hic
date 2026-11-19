@@ -3,7 +3,7 @@ mod cli;
 mod manifest;
 use build::{build_index, compact_existing};
 use manifest::{fingerprint, Boundary, Checkpoint, Input, Manifest};
-mod rapidgzip;
+pub(crate) mod rapidgzip;
 mod stream;
 pub(crate) use cli::main;
 pub(crate) use stream::{stream_paired, stream_split, FastqPair, PairedFastqReader};

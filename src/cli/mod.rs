@@ -72,6 +72,16 @@ pub(crate) enum Command {
     },
     /// Run the pipeline locally or submit it to Slurm.
     Run(Box<run::RunArgs>),
+    /// Run the droplet-style 3-read single-cell Hi-C pipeline.
+    #[command(after_help = examples_help(
+        concat!(
+            "Reads are R1 (gDNA), R2 (cell barcode) and R3 (gDNA mate).\n",
+            "The FASTQ index/chunk engine, fastp trimming and a dedicated R2\n",
+            "barcode worker are used; CB is written to BAM and pairs."
+        ),
+        "  rust-hic droplet droplet.yaml\n  rust-hic droplet droplet.yaml --check"
+    ))]
+    Droplet(DropletArgs),
     /// Internal: parse SAM from stdin (benchmarking against pairtools).
     #[command(hide = true)]
     ParseSam(ParseSamArgs),
@@ -80,6 +90,13 @@ pub(crate) enum Command {
     SlurmTask {
         phase: String,
         work: PathBuf,
+        chunk: Option<usize>,
+    },
+    /// Internal droplet Slurm worker; invoked by submitted jobs.
+    #[command(hide = true)]
+    DropletSlurmTask {
+        phase: String,
+        plan: PathBuf,
         chunk: Option<usize>,
     },
     /// Build an index for paired gzip FASTQ files.
@@ -147,6 +164,35 @@ pub(crate) struct ParseSamArgs {
     /// Maximum inter-alignment gap.
     #[arg(long, default_value_t = 20)]
     pub max_inter_align_gap: i64,
+    /// Emit a trailing CB column (expects CB:Z tags).
+    #[arg(long)]
+    pub cb: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum DropletMode {
+    Local,
+    Slurm,
+}
+
+#[derive(Args)]
+pub(crate) struct DropletArgs {
+    /// Droplet Hi-C YAML configuration.
+    pub config: PathBuf,
+    /// Run locally or submit a distributed Slurm workflow.
+    #[arg(long, value_enum, default_value_t = DropletMode::Local)]
+    pub mode: DropletMode,
+    /// Validate configuration, inputs and tools, then exit.
+    #[arg(long)]
+    pub check: bool,
+    /// Retain per-chunk and merged BAM (overrides the configuration).
+    #[arg(long)]
+    pub keep_bam: bool,
+    /// Internal: run only the FASTQ index and barcode prepass.
+    #[arg(long, hide = true)]
+    pub prepass_only: bool,
+    #[command(flatten, next_help_heading = "Slurm options")]
+    pub slurm: run::SlurmOptions,
 }
 
 #[derive(Args)]
