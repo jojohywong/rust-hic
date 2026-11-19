@@ -120,6 +120,7 @@ fn run(
             keep_pairs: true,
             keep_bam: false,
             dedup_max_mismatch: max_mismatch,
+            output_pair_types: crate::workflow::config::output_pair_types(),
             resources,
             resolutions,
             sort_chromosomes,

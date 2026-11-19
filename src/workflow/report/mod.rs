@@ -51,7 +51,9 @@ struct Restriction {
 #[derive(Clone, Deserialize, Serialize)]
 struct FilterStats {
     input_records: u64,
+    input_selected: u64,
     retained_records: u64,
+    retained_selected: u64,
     same_fragment: u64,
     dangling: u64,
     self_ligation: u64,
@@ -146,7 +148,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
         .with_context(|| format!("parse {}", path.display()))
 }
 
-fn dedup_counts(path: &Path) -> Result<(u64, u64, u64)> {
+fn dedup_counts(path: &Path) -> Result<(u64, u64, u64, u64)> {
     let reader =
         BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     let mut result = None;
@@ -171,6 +173,7 @@ fn dedup_counts(path: &Path) -> Result<(u64, u64, u64)> {
         }
         result = Some((
             get("input_records")?,
+            get("input_selected")?,
             get("duplicates")?,
             get("output_records")?,
         ));
@@ -330,10 +333,10 @@ fn collect(
     contact_path: &Path,
 ) -> Result<Report> {
     let contact: ContactStats = read_json(contact_path)?;
-    let (before_dedup, duplicates, after_dedup) = dedup_counts(&layout.log("dedup"))?;
+    let (before_dedup, before_dedup_selected, duplicates, after_dedup) =
+        dedup_counts(&layout.log("dedup"))?;
     if before_dedup.checked_sub(duplicates) != Some(after_dedup)
-        || after_dedup != contact.total_nodups
-        || contact.cis.checked_add(contact.trans) != Some(after_dedup)
+        || contact.cis.checked_add(contact.trans) != Some(contact.total_nodups)
         || contact
             .cis_20kb_plus
             .checked_add(contact.cis_shorter_than_20kb)
@@ -341,6 +344,26 @@ fn collect(
     {
         bail!("inconsistent deduplication or contact statistics")
     }
+    let select_path = layout.select_stats();
+    if select_path.exists() {
+        #[derive(Deserialize)]
+        struct SelectStats {
+            input_records: u64,
+            output_records: u64,
+            removed_records: u64,
+        }
+        let s: SelectStats = read_json(&select_path)?;
+        if s.input_records != after_dedup
+            || s.output_records != contact.total_nodups
+            || s.input_records.checked_sub(s.removed_records) != Some(s.output_records)
+        {
+            bail!("inconsistent pair-type selection statistics")
+        }
+    } else if after_dedup != contact.total_nodups {
+        bail!("inconsistent deduplication or contact statistics")
+    }
+    // Contact statistics describe the pairs that were actually matrixed,
+    // i.e. the post-selection set.
     for (name, counts) in [
         ("pair type", contact.pair_types.as_ref()),
         ("strand orientation", contact.strand_orientations.as_ref()),
@@ -349,7 +372,7 @@ fn collect(
             let total = counts
                 .values()
                 .try_fold(0u64, |sum, value| sum.checked_add(*value));
-            if total != Some(after_dedup) {
+            if total != Some(contact.total_nodups) {
                 bail!("inconsistent {name} statistics")
             }
         }
@@ -389,7 +412,9 @@ fn collect(
     if enabled != filter.is_some() {
         bail!("restriction-filter statistics do not match the configuration")
     }
-    let before_filter = filter.as_ref().map_or(before_dedup, |f| f.input_records);
+    let before_filter = filter
+        .as_ref()
+        .map_or(before_dedup_selected, |f| f.input_selected);
     let chunks = chunk_stats(layout)?;
     let read_pairs = if c.fastq.is_some() {
         if chunks.is_empty() || chunks.iter().enumerate().any(|(i, c)| c.chunk != i) {

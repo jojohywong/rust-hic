@@ -96,6 +96,7 @@ pub fn run(args: MapArgs) -> Result<()> {
     config.jobs = args.jobs;
     let chunk = args.chunk;
     config.threads_per_job = args.threads_per_job;
+    config.sam.walks_policy = args.walks_policy;
     config.sam.min_mapq = args.min_mapq;
     config.sam.max_molecule_size = args.max_molecule_size;
     config.sam.max_inter_align_gap = args.max_inter_align_gap;

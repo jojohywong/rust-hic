@@ -1,6 +1,7 @@
 //! Public command-line arguments and entry points.
 pub(crate) mod index;
 pub(crate) mod map;
+pub(crate) mod parse;
 pub(crate) mod postprocess;
 pub(crate) mod run;
 
@@ -71,6 +72,9 @@ pub(crate) enum Command {
     },
     /// Run the pipeline locally or submit it to Slurm.
     Run(Box<run::RunArgs>),
+    /// Internal: parse SAM from stdin (benchmarking against pairtools).
+    #[command(hide = true)]
+    ParseSam(ParseSamArgs),
     /// Internal Slurm worker; invoked by submitted jobs.
     #[command(hide = true)]
     SlurmTask {
@@ -127,6 +131,22 @@ pub(crate) enum Command {
     /// Show version information.
     #[command(after_help = examples_help("", "  rust-hic version"))]
     Version,
+}
+
+#[derive(Args)]
+pub(crate) struct ParseSamArgs {
+    /// Walk policy: 5unique or all.
+    #[arg(long, default_value = "5unique")]
+    pub walks_policy: String,
+    /// Minimum MAPQ for a unique alignment.
+    #[arg(long, default_value_t = 1)]
+    pub min_mapq: u8,
+    /// Maximum molecule size.
+    #[arg(long, default_value_t = 750)]
+    pub max_molecule_size: i64,
+    /// Maximum inter-alignment gap.
+    #[arg(long, default_value_t = 20)]
+    pub max_inter_align_gap: i64,
 }
 
 #[derive(Args)]
@@ -199,6 +219,9 @@ pub(crate) struct MapArgs {
     /// Aligner threads per chunk.
     #[arg(long, default_value_t = 8)]
     pub threads_per_job: usize,
+    /// Walk policy: 5unique or all (multi-way contacts).
+    #[arg(long, default_value = "5unique")]
+    pub walks_policy: String,
     /// Minimum MAPQ for BWA unique classification.
     #[arg(long, default_value_t = 1)]
     pub min_mapq: u8,

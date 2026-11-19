@@ -330,6 +330,10 @@ pub(super) fn finish_stages(
     d.arg(r.dedup_workers.to_string())
         .arg(c.dedup_max_mismatch.to_string());
     cmds.push(("dedup".into(), d));
+    let mut s = stage_command(Stage::SelectPairs)?;
+    s.arg(c.output_pair_types.join(","))
+        .arg(layout.select_stats());
+    cmds.push(("select".into(), s));
     if !pairs_only {
         let mut stats = stage_command(Stage::PairsStats)?;
         stats.arg(layout.contact_stats());

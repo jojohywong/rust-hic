@@ -278,13 +278,23 @@ pub(super) fn align_one(
                 .spawn_scoped(scope, move || {
                     let result = (|| -> Result<_> {
                         let output = BufWriter::with_capacity(1024 * 1024, File::create(outpath)?);
-                        super::super::sam::convert(
-                            BufReader::with_capacity(1024 * 1024, reader),
-                            output,
-                            c.sam.min_mapq,
-                            c.sam.max_molecule_size,
-                            c.sam.max_inter_align_gap,
-                        )
+                        if c.sam.walks_policy == "all" {
+                            super::super::sam::convert_all(
+                                BufReader::with_capacity(1024 * 1024, reader),
+                                output,
+                                c.sam.min_mapq,
+                                c.sam.max_molecule_size,
+                                c.sam.max_inter_align_gap,
+                            )
+                        } else {
+                            super::super::sam::convert(
+                                BufReader::with_capacity(1024 * 1024, reader),
+                                output,
+                                c.sam.min_mapq,
+                                c.sam.max_molecule_size,
+                                c.sam.max_inter_align_gap,
+                            )
+                        }
                     })();
                     let _ = tx.send(Finished::Parser(result));
                 });

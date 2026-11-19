@@ -86,6 +86,9 @@ pub(crate) struct Config {
     pub(crate) keep_bam: bool,
     #[serde(default = "dedup_max_mismatch")]
     pub(crate) dedup_max_mismatch: i64,
+    /// Pair types retained after deduplication (default UU/UR/RU).
+    #[serde(default = "output_pair_types")]
+    pub(crate) output_pair_types: Vec<String>,
     #[serde(default)]
     pub(crate) resources: Resources,
     #[serde(default = "resolutions")]
@@ -97,6 +100,9 @@ pub(crate) struct Config {
 }
 pub(crate) fn dedup_max_mismatch() -> i64 {
     3
+}
+pub(crate) fn output_pair_types() -> Vec<String> {
+    vec!["UU".into(), "UR".into(), "RU".into()]
 }
 fn enabled() -> bool {
     true

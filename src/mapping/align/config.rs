@@ -44,6 +44,9 @@ pub struct SamConfig {
     pub min_mapq: u8,
     pub max_molecule_size: i64,
     pub max_inter_align_gap: i64,
+    /// Walk policy: `5unique` (default) or `all` (multi-way contacts).
+    #[serde(default = "default_walks_policy")]
+    pub walks_policy: String,
 }
 impl Default for SamConfig {
     fn default() -> Self {
@@ -51,8 +54,12 @@ impl Default for SamConfig {
             min_mapq: 1,
             max_molecule_size: 750,
             max_inter_align_gap: 20,
+            walks_policy: default_walks_policy(),
         }
     }
+}
+fn default_walks_policy() -> String {
+    "5unique".into()
 }
 fn default_aligner() -> String {
     "bwa-mem3".into()
@@ -224,6 +231,14 @@ pub fn resolve(c: &mut FastqConfig, base: &Path) -> Result<()> {
         let parent = fs::canonicalize(p.parent().context("index prefix has no parent")?)?;
         parent.join(p.file_name().context("index prefix has no filename")?)
     };
+    match c.sam.walks_policy.as_str() {
+        "5unique" => {}
+        "all" if c.aligner == "chromap" => {
+            bail!("chromap does not support sam.walks_policy=all")
+        }
+        "all" => {}
+        other => bail!("sam.walks_policy must be 5unique or all, got {other:?}"),
+    }
     if c.aligner == "bwa-mem3" {
         #[cfg(target_arch = "x86_64")]
         if !std::is_x86_feature_detected!("sse4.2") {

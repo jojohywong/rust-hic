@@ -10,8 +10,17 @@ For Slurm configuration and resource requests, see [Slurm execution](slurm.md).
 
 The workflow indexes paired gzip FASTQs, aligns chunks, sorts,
 merges, filters and deduplicates contacts, and produces a multi-resolution
-`.mcool` file. FASTQ alignment supports built-in BWA-MEM3 and external
-Chromap, BWA-MEM or BWA-MEM2 executables.
+`.mcool` file:
+
+```text
+map (parse + pair types) → sort chunks → merge → [restriction filter]
+    → dedup → pair-type selection → contact stats → cool/mcool → report
+```
+
+The restriction filter is optional (`fragments` or `digest` configured).
+Deduplication clusters all mapped pair types; pair-type selection then keeps
+`output_pair_types` (default `UU`, `UR`, `RU`). FASTQ alignment supports
+built-in BWA-MEM3 and external Chromap, BWA-MEM or BWA-MEM2 executables.
 In local mode, as each FASTQ chunk finishes mapping, `run` starts its sorting
 and optional restriction filtering while other chunks continue mapping. It then merges
 all chunks and deduplicates globally, so duplicates spanning chunks are found.

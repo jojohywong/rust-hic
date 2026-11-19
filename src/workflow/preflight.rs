@@ -256,6 +256,13 @@ fn prepare_with(
     if c.dedup_max_mismatch < 0 {
         bail!("dedup_max_mismatch must be non-negative");
     }
+    if c.output_pair_types.is_empty()
+        || c.output_pair_types
+            .iter()
+            .any(|t| t.len() != 2 || !t.is_ascii())
+    {
+        bail!("output_pair_types must contain two-character pair type codes");
+    }
     let r = &c.resources;
     for (name, value) in [
         ("merge_workers", r.merge_workers),

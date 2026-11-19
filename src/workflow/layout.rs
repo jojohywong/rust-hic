@@ -196,6 +196,12 @@ impl Layout {
         }
     }
 
+    pub(crate) fn select_stats(&self) -> PathBuf {
+        match self.kind {
+            Kind::Grouped => self.in_dir(QC_DIR, format!("{}.select-stats.json", self.prefix)),
+            Kind::Flat => self.root.join("select-stats.json"),
+        }
+    }
     pub(crate) fn filter_stats(&self) -> PathBuf {
         match self.kind {
             Kind::Grouped => self.in_dir(QC_DIR, format!("{}.filter-stats.json", self.prefix)),

@@ -12,7 +12,9 @@ use std::{
 #[derive(Default, Deserialize, Serialize)]
 struct Stats {
     input_records: u64,
+    input_selected: u64,
     retained_records: u64,
+    retained_selected: u64,
     same_fragment: u64,
     dangling: u64,
     self_ligation: u64,
@@ -33,7 +35,9 @@ pub(crate) fn combine_stats(inputs: &[PathBuf], output: &Path) -> Result<()> {
         }
         add!(
             input_records,
+            input_selected,
             retained_records,
+            retained_selected,
             same_fragment,
             dangling,
             self_ligation,
@@ -147,9 +151,21 @@ fn run() -> Result<()> {
         };
         let p1: u64 = f[2].parse()?;
         let p2: u64 = f[4].parse()?;
-        if p1 == 0 || p2 == 0 {
-            bail!("unmapped or zero position unsupported")
-        };
+        // Unmapped pairs are not contacts and are dropped. A mapped contig
+        // missing from the fragment BED is a configuration error, not a
+        // contact to discard silently.
+        if f[1] == "!" || f[3] == "!" || p1 == 0 || p2 == 0 {
+            continue;
+        }
+        if !frags.contains_key(f[1]) {
+            bail!("fragment BED has no contig {}", f[1])
+        }
+        if !frags.contains_key(f[3]) {
+            bail!("fragment BED has no contig {}", f[3])
+        }
+        if matches!(f[7], "UU" | "UR" | "RU") {
+            stats.input_selected += 1;
+        }
         let a = find(&frags, f[1], p1)?;
         let b = find(&frags, f[3], p2)?;
         stats.input_records += 1;
@@ -162,6 +178,9 @@ fn run() -> Result<()> {
             }
         } else {
             stats.retained_records += 1;
+            if matches!(f[7], "UU" | "UR" | "RU") {
+                stats.retained_selected += 1;
+            }
             writeln!(
                 out,
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",

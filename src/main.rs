@@ -38,6 +38,7 @@ fn main() {
             })
             .map_err(Into::into),
         Some(cli::Command::Run(args)) => cli::run::execute(*args),
+        Some(cli::Command::ParseSam(args)) => cli::parse::run(args),
         Some(cli::Command::SlurmTask { phase, work, chunk }) => {
             workflow::slurm::task(&phase, &work, chunk)
         }
