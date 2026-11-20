@@ -1,6 +1,7 @@
 mod attr;
 pub(crate) mod bin_pairs;
 pub(crate) mod multiresolution;
+pub(crate) mod scool;
 
 /// Internal setting passed to the matrix balancing stage.
 pub(crate) const BALANCE_MAX_ITERS_ENV: &str = "RUST_HIC_BALANCE_MAX_ITERS";
@@ -24,17 +25,30 @@ struct Chromosome {
     pub len: u64,
 }
 
-fn canonical_rank(name: &str) -> Option<(u8, u32)> {
+fn canonical_rank(name: &str) -> Option<(u8, u32, u32)> {
     let plain = name.strip_prefix("chr").unwrap_or(name);
     match plain {
-        "X" => Some((1, 0)),
-        "Y" => Some((2, 0)),
-        "Z" => Some((3, 0)),
-        "W" => Some((4, 0)),
-        "M" | "MT" => Some((5, 0)),
+        "X" => Some((1, 0, 0)),
+        "Y" => Some((2, 0, 0)),
+        "Z" => Some((3, 0, 0)),
+        "W" => Some((4, 0, 0)),
+        "M" | "MT" => Some((5, 0, 0)),
         _ => {
-            let n = plain.parse::<u32>().ok()?;
-            (n > 0).then_some((0, n))
+            let digits = plain.bytes().take_while(|b| b.is_ascii_digit()).count();
+            if digits == 0 {
+                return None;
+            }
+            let number = plain[..digits].parse::<u32>().ok()?;
+            if number == 0 {
+                return None;
+            }
+            let sub = match &plain[digits..] {
+                "" => 0,
+                "L" => 1,
+                "R" => 2,
+                suffix => 3 + u32::from(suffix.as_bytes()[0]),
+            };
+            Some((0, number, sub))
         }
     }
 }
@@ -104,8 +118,8 @@ fn read_chromosomes(path: &Path, sort: bool) -> Result<Vec<Chromosome>> {
     if sort {
         all.sort_by(|a, b| {
             canonical_rank(&a.name)
-                .unwrap_or((u8::MAX, 0))
-                .cmp(&canonical_rank(&b.name).unwrap_or((u8::MAX, 0)))
+                .unwrap_or((u8::MAX, 0, 0))
+                .cmp(&canonical_rank(&b.name).unwrap_or((u8::MAX, 0, 0)))
                 .then_with(|| natural_cmp(&a.name, &b.name))
         });
     }
@@ -129,14 +143,19 @@ mod tests {
 
     #[test]
     fn chromosome_rank_depends_only_on_name() {
-        assert_eq!(canonical_rank("chr19"), Some((0, 19)));
-        assert_eq!(canonical_rank("chr22"), Some((0, 22)));
-        assert_eq!(canonical_rank("chr02"), Some((0, 2)));
-        assert_eq!(canonical_rank("23"), Some((0, 23)));
-        assert_eq!(canonical_rank("X"), Some((1, 0)));
-        assert_eq!(canonical_rank("chrY"), Some((2, 0)));
-        assert_eq!(canonical_rank("MT"), Some((5, 0)));
-        assert_eq!(canonical_rank("chrM"), Some((5, 0)));
+        assert_eq!(canonical_rank("chr19"), Some((0, 19, 0)));
+        assert_eq!(canonical_rank("chr22"), Some((0, 22, 0)));
+        assert_eq!(canonical_rank("chr02"), Some((0, 2, 0)));
+        assert_eq!(canonical_rank("23"), Some((0, 23, 0)));
+        assert_eq!(canonical_rank("X"), Some((1, 0, 0)));
+        assert_eq!(canonical_rank("chrY"), Some((2, 0, 0)));
+        assert_eq!(canonical_rank("MT"), Some((5, 0, 0)));
+        assert_eq!(canonical_rank("chr2L"), Some((0, 2, 1)));
+        assert_eq!(canonical_rank("chr2R"), Some((0, 2, 2)));
+        assert_eq!(canonical_rank("chr3L"), Some((0, 3, 1)));
+        assert_eq!(canonical_rank("chr3R"), Some((0, 3, 2)));
+        assert_eq!(canonical_rank("chr4"), Some((0, 4, 0)));
+        assert_eq!(canonical_rank("chrM"), Some((5, 0, 0)));
         assert_eq!(canonical_rank("chrUn_1"), None);
     }
 }

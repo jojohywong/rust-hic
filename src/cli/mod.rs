@@ -72,7 +72,8 @@ pub(crate) enum Command {
     },
     /// Run the pipeline locally or submit it to Slurm.
     Run(Box<run::RunArgs>),
-    /// Run the droplet-style 3-read single-cell Hi-C pipeline.
+    /// Deprecated alias for `run` with a droplet or two-read configuration.
+    #[command(hide = true)]
     #[command(after_help = examples_help(
         concat!(
             "Reads are R1 (gDNA), R2 (cell barcode) and R3 (gDNA mate).\n",

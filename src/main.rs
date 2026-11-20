@@ -41,9 +41,15 @@ fn main() {
         Some(cli::Command::Run(args)) => cli::run::execute(*args),
         Some(cli::Command::Droplet(args)) => {
             if args.mode == cli::DropletMode::Slurm {
-                droplet::slurm::submit(&args.config, args.slurm, args.check, args.keep_bam)
+                droplet::slurm::submit(&args.config, args.slurm, args.check, args.keep_bam, false)
             } else {
-                droplet::run(&args.config, args.check, args.keep_bam, args.barcode_preprocessing_only)
+                droplet::run(
+                    &args.config,
+                    args.check,
+                    args.keep_bam,
+                    args.barcode_preprocessing_only,
+                    false,
+                )
             }
         }
         Some(cli::Command::DropletSlurmTask { phase, plan, chunk }) => {

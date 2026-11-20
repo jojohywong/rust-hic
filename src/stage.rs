@@ -26,6 +26,7 @@ define_stages! {
     PairsStats => "pairs_stats",
     BinPairs => "bin_pairs",
     BuildMcool => "build_mcool",
+    BuildScool => "build_scool",
 }
 
 pub(crate) fn stage_command(stage: Stage) -> io::Result<Command> {

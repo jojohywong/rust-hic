@@ -2,7 +2,7 @@
 use crate::workflow;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 #[command(
@@ -33,6 +33,9 @@ pub(crate) struct RunArgs {
     /// Retain aligner-emitted records in one unsorted, unindexed BAM; requires FASTQ input.
     #[arg(long)]
     keep_bam: bool,
+    /// Internal: run only the FASTQ index and barcode preprocessing (droplet layouts).
+    #[arg(long, hide = true, alias = "prepass-only")]
+    barcode_preprocessing_only: bool,
     #[command(flatten, next_help_heading = "Slurm options")]
     slurm: SlurmOptions,
     #[command(subcommand)]
@@ -81,6 +84,9 @@ pub(crate) struct SlurmOptions {
     /// Slurm partition, if the cluster requires one.
     #[arg(long)]
     pub(crate) partition: Option<String>,
+    /// Slurm QOS, if the cluster requires one.
+    #[arg(long)]
+    pub(crate) qos: Option<String>,
     /// Default time limit for each stage (default: 04:00:00).
     #[arg(long)]
     pub(crate) time: Option<String>,
@@ -102,6 +108,13 @@ pub(crate) struct SlurmOptions {
     /// Memory for sorting, merging, and matrix creation (default: 64G).
     #[arg(long)]
     pub(crate) finish_mem: Option<String>,
+    /// Number of nodes for non-array jobs (prepare/finish). Array chunk tasks
+    /// always run one chunk per node; the array spreads them across nodes.
+    #[arg(long)]
+    pub(crate) nodes: Option<usize>,
+    /// Tasks per node for non-array jobs (default: 1).
+    #[arg(long)]
+    pub(crate) ntasks_per_node: Option<usize>,
     /// Maximum concurrent alignment tasks (defaults to fastq.jobs).
     #[arg(long)]
     pub(crate) max_parallel: Option<usize>,
@@ -119,6 +132,57 @@ pub(crate) struct SlurmOptions {
     pub(crate) sbatch_arg: Vec<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct LayoutProbe {
+    #[serde(default)]
+    sequencing_layout: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Bulk,
+    Droplet,
+}
+
+/// Read only the layout key so the same command can dispatch to either schema.
+fn probe_layout(path: &Path) -> Result<Layout> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read configuration {}", path.display()))?;
+    let probe: LayoutProbe = serde_yaml::from_str(&text)
+        .with_context(|| format!("parse configuration {}", path.display()))?;
+    match probe.sequencing_layout.as_deref().unwrap_or("bulk") {
+        "bulk" => Ok(Layout::Bulk),
+        "droplet_three_read" | "droplet" | "three_read" | "two_read" => Ok(Layout::Droplet),
+        other => bail!(
+            "sequencing_layout must be bulk, droplet_three_read or two_read, got {other:?}"
+        ),
+    }
+}
+
+fn execute_droplet(config: &Path, args: RunArgs) -> Result<()> {
+    match args.mode {
+        RunMode::Local => {
+            if args.slurm != SlurmOptions::default() {
+                bail!("Slurm options require --mode slurm")
+            }
+            crate::droplet::run(
+                config,
+                args.check,
+                args.keep_bam,
+                args.barcode_preprocessing_only,
+                args.keep_pairs,
+            )
+        }
+        RunMode::Slurm => crate::droplet::slurm::submit(
+            config,
+            args.slurm,
+            args.check,
+            args.keep_bam,
+            args.keep_pairs,
+        ),
+    }
+}
+
 pub(crate) fn execute(args: RunArgs) -> Result<()> {
     if let Some(action) = args.action {
         return match action {
@@ -126,18 +190,28 @@ pub(crate) fn execute(args: RunArgs) -> Result<()> {
                 result_dir,
                 output,
                 recompute_contact_stats,
-            } => workflow::report::regenerate(
-                &result_dir,
-                output.as_deref(),
-                recompute_contact_stats,
-            ),
+            } => {
+                let resolved = result_dir.join("config.resolved.yaml");
+                if resolved.is_file() && probe_layout(&resolved)? == Layout::Droplet {
+                    bail!("`run report` is only implemented for bulk runs")
+                }
+                workflow::report::regenerate(
+                    &result_dir,
+                    output.as_deref(),
+                    recompute_contact_stats,
+                )
+            }
             RunAction::Status { output_dir } => workflow::slurm::status(&output_dir),
             RunAction::Cancel { output_dir } => workflow::slurm::cancel(&output_dir),
         };
     }
     let config = args
         .config
+        .clone()
         .context("a workflow configuration is required")?;
+    if probe_layout(&config)? == Layout::Droplet {
+        return execute_droplet(&config, args);
+    }
     match args.mode {
         RunMode::Local => {
             if args.slurm != SlurmOptions::default() {

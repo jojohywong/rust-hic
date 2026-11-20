@@ -61,6 +61,9 @@ pub(crate) struct OutputConfig {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
+    /// Pipeline layout (`bulk`). Droplet layouts use the droplet schema.
+    #[serde(default = "default_bulk_layout")]
+    pub(crate) sequencing_layout: String,
     pub(crate) assembly: String,
     pub(crate) chromsizes: PathBuf,
     pub(crate) fragments: Option<PathBuf>,
@@ -149,4 +152,8 @@ mod tests {
             "example defaults diverged from the implementation"
         );
     }
+}
+
+fn default_bulk_layout() -> String {
+    "bulk".into()
 }

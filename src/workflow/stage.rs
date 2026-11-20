@@ -19,6 +19,7 @@ pub(crate) fn dispatch(invoked: &std::ffi::OsStr) -> bool {
         Stage::PairsStats => pairs::stats::main(),
         Stage::BinPairs => matrix::bin_pairs::main(),
         Stage::BuildMcool => matrix::multiresolution::main(),
+        Stage::BuildScool => matrix::scool::main(),
     }
     true
 }

@@ -29,6 +29,7 @@ use super::{
     fragments,
     index::{self, IndexManifest},
     qc,
+    two_read,
 };
 
 const PAIRS_HEADER: &str =
@@ -47,25 +48,55 @@ pub(crate) fn run(
     check: bool,
     keep_bam_flag: bool,
     barcode_preprocessing_only: bool,
+    keep_pairs_flag: bool,
 ) -> Result<()> {
-    let (c, _base) = DropletConfig::load(path)?;
+    let (mut c, _base) = DropletConfig::load(path)?;
+    if keep_pairs_flag {
+        c.keep_pairs = true;
+        c.compressed_pairs = false;
+    }
     if check {
         println!("Droplet configuration valid");
+        println!("  Layout: {}", c.sequencing_layout);
         println!("  R1: {}", c.read1.display());
-        println!("  R2 (barcode): {}", c.barcode_read.display());
-        println!("  R3: {}", c.read3.display());
+        for (label, path) in [
+            ("R2 (barcode)", c.barcode_read.as_deref()),
+            ("R3", c.read3.as_deref()),
+            ("R2 (two_read)", c.read2.as_deref()),
+            ("Whitelist", c.whitelist.as_deref()),
+        ] {
+            if let Some(path) = path {
+                println!("  {label}: {}", path.display());
+            }
+        }
+        if let Some(cell) = &c.cell_barcode {
+            println!(
+                "  Cell barcode: {} rounds, orientation {}",
+                cell.barcode_rounds.len(),
+                cell.barcode_orientation
+            );
+            for round in &cell.barcode_rounds {
+                println!(
+                    "    {}: whitelist {} max_mismatch {}",
+                    round.round_name,
+                    round.whitelist_file.display(),
+                    round.maximum_mismatches
+                );
+            }
+        }
         println!("  Reference: {}", c.reference.display());
         println!("  Index: {}", c.aligner_index.display());
         println!("  Aligner: {}", c.aligner_executable.display());
         println!("  fastp: {}", c.fastp_executable.display());
-        println!("  Whitelist: {}", c.whitelist.display());
-        println!(
-            "  Barcode: slice {}:{} orientation {} max_mismatch {}",
-            c.barcode.slice_start,
-            c.barcode.slice_start + c.barcode.slice_len,
-            c.barcode.orientation,
-            c.barcode.max_mismatch
-        );
+        if !c.is_two_read() {
+            println!(
+                "  Barcode: slice {}:{} orientation {} max_mismatch {}",
+                c.barcode.slice_start,
+                c.barcode.slice_start + c.barcode.slice_len,
+                c.barcode.orientation,
+                c.barcode.max_mismatch
+            );
+        }
         println!("  Output: {}", c.output_dir.display());
         println!("  Chunks: target {}", c.chunk_size);
         println!(
@@ -86,7 +117,13 @@ pub(crate) fn run(
     let index_dir = index::ensure_index(&c, &logs.join("fastq-index.log"))?;
     let manifest = IndexManifest::load(&index_dir)?;
     let sidecar_dir = c.scratch().join("barcodes");
-    if barcode_preprocessing_only {
+    if c.is_two_read() {
+        let chosen = two_read::resolve_orientation(&c, &index_dir)?;
+        eprintln!("event=barcode_orientation chosen={chosen}");
+        if barcode_preprocessing_only {
+            return Ok(());
+        }
+    } else if barcode_preprocessing_only {
         let preprocessing = barcode::preprocess(&c, &manifest, &sidecar_dir)?;
         write_barcode_qc(&preprocessing, &qc_dir)?;
         return Ok(());
@@ -95,10 +132,27 @@ pub(crate) fn run(
     let chunk_dir = c.scratch().join("chunks");
     fs::create_dir_all(&chunk_dir)?;
 
-    let post = c.cell_barcode_process_mode == "post";
-    let none = c.cell_barcode_process_mode == "none";
-    let results = if none {
-        // No barcode read at all: align only, leave CB as ".".
+    let post = c.barcode_mode() == "post";
+    let none = c.barcode_mode() == "none";
+    let results = if c.is_two_read() {
+        let align_start = Instant::now();
+        let results = align_chunks(
+            &c,
+            &index_dir,
+            &sidecar_dir,
+            manifest.chunks,
+            false,
+            keep_bam,
+            &chunk_dir,
+            &logs,
+        )?;
+        eprintln!(
+            "event=align_done elapsed_seconds={:.3}",
+            align_start.elapsed().as_secs_f64()
+        );
+        results
+    } else if none {
+        // No barcode read at all: align only, leave CB as "."..
         let align_start = Instant::now();
         let results = align_chunks(
             &c,
@@ -193,7 +247,7 @@ pub(crate) fn finish_pipeline(
     let qc_dir = c.output_dir.join("qc");
     let align_dir = c.output_dir.join("alignments");
     let pairs_dir = c.output_dir.join("pairs");
-    if c.cell_barcode_process_mode == "post" {
+    if c.barcode_mode() == "post" {
         let join_start = Instant::now();
         join_chunks(results, &c.scratch().join("barcodes"), c.jobs)?;
         eprintln!(
@@ -264,8 +318,14 @@ pub(crate) fn finish_pipeline(
     dedup_pairs(c, &sorted, &final_pairs, &logs)?;
 
     let summary = qc::per_cell(&final_pairs, &qc_dir)?;
+    if c.is_two_read() {
+        two_read::write_qc(c, &qc_dir)?;
+    }
     if c.matrix.enabled {
         build_matrix(c, &final_pairs, &logs)?;
+    }
+    if c.matrix.scool {
+        build_scool(c, &final_pairs, &qc_dir, &logs)?;
     }
     let mut pairs_gz = None;
     if c.compressed_pairs {
@@ -509,9 +569,10 @@ pub(crate) fn align_chunk(
     logs: &Path,
 ) -> Result<ChunkResult> {
     let started = Instant::now();
+    let two_read = c.is_two_read();
     let dir = chunk_dir.join(format!("chunk-{chunk:04}"));
     fs::create_dir_all(&dir)?;
-    let map = if join_cb {
+    let map = if join_cb && !two_read {
         load_barcodes(&sidecar_dir.join(format!("chunk-{chunk:04}.tsv")))
             .with_context(|| format!("load barcode sidecar for chunk {chunk}"))?
     } else {
@@ -524,17 +585,36 @@ pub(crate) fn align_chunk(
 
     let fastp_r1 = dir.join("fastp_read1.fifo");
     let fastp_r3 = dir.join("fastp_read3.fifo");
-    for path in [&fastp_r1, &fastp_r3] {
-        let _ = fs::remove_file(path);
-        fifo(path)?;
+    if !two_read {
+        for path in [&fastp_r1, &fastp_r3] {
+            let _ = fs::remove_file(path);
+            fifo(path)?;
+        }
     }
     let mut fastp_command = Command::new(&c.fastp_executable);
+    if two_read {
+        fastp_command
+            .arg("--stdin")
+            .arg("--interleaved_in")
+            .arg("--stdout");
+        let trim = &c.additional_trimming;
+        for (flag, value) in [
+            ("--trim_front1", trim.read1_five_prime_bases),
+            ("--trim_front2", trim.read2_five_prime_bases),
+            ("--trim_tail1", trim.read1_three_prime_bases),
+            ("--trim_tail2", trim.read2_three_prime_bases),
+        ] {
+            fastp_command.arg(flag).arg(value.to_string());
+        }
+    } else {
+        fastp_command
+            .arg("-i")
+            .arg(&fastp_r1)
+            .arg("-I")
+            .arg(&fastp_r3)
+            .arg("--stdout");
+    }
     fastp_command
-        .arg("-i")
-        .arg(&fastp_r1)
-        .arg("-I")
-        .arg(&fastp_r3)
-        .arg("--stdout")
         .arg("--adapter_sequence")
         .arg(&c.adapter)
         .arg("--adapter_sequence_r2")
@@ -546,7 +626,7 @@ pub(crate) fn align_chunk(
         .arg("--html")
         .arg(logs.join(format!("fastp-{chunk:04}.html")));
     let mut fastp = fastp_command
-        .stdin(Stdio::null())
+        .stdin(if two_read { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::from(File::create(
             logs.join(format!("fastp-{chunk:04}.log")),
@@ -554,6 +634,11 @@ pub(crate) fn align_chunk(
         .spawn()
         .context("start fastp")?;
     let fastp_stdout = fastp.stdout.take().context("capture fastp stdout")?;
+    let fastp_stdin = if two_read {
+        Some(fastp.stdin.take().context("capture fastp stdin")?)
+    } else {
+        None
+    };
 
     let mut bwa_command = Command::new(&c.aligner_executable);
     bwa_command.arg("mem");
@@ -609,16 +694,35 @@ pub(crate) fn align_chunk(
 
     let cancel_fastq_reader = std::sync::Arc::clone(&cancel);
     let index_dir_thread = index_dir.to_path_buf();
-    let reader_threads = c.fastq_reader_threads;
-    let fastq_reader = thread::spawn(move || -> Result<[u64; 2]> {
-        stream_split(
-            &index_dir_thread,
-            chunk,
-            [&fastp_r1, &fastp_r3],
-            &cancel_fastq_reader,
-            reader_threads,
-        )
-    });
+    let feeder = if two_read {
+        let c_feed = c.clone();
+        let stdin = fastp_stdin.context("two-read fastp stdin")?;
+        thread::spawn(move || -> Result<(u64, Option<two_read::Stats>)> {
+            let stats = two_read::feeder(
+                &c_feed,
+                &index_dir_thread,
+                chunk,
+                stdin,
+                &cancel_fastq_reader,
+            )?;
+            let pairs = stats.total;
+            Ok((pairs, Some(stats)))
+        })
+    } else {
+        let r1 = fastp_r1.clone();
+        let r3 = fastp_r3.clone();
+        let reader_threads = c.fastq_reader_threads;
+        thread::spawn(move || -> Result<(u64, Option<two_read::Stats>)> {
+            stream_split(
+                &index_dir_thread,
+                chunk,
+                [&r1, &r3],
+                &cancel_fastq_reader,
+                reader_threads,
+            )?;
+            Ok((0, None))
+        })
+    };
 
     let mut stamper_result = stamp_sam(
         sam_output,
@@ -626,15 +730,16 @@ pub(crate) fn align_chunk(
         if keep_bam { Some(bam_writer) } else { None },
         pairs_writer,
         &cancel,
+        two_read,
     );
     if stamper_result.is_err() {
         cancel.store(true, Ordering::Release);
         let _ = fastp.kill();
         let _ = bwa.kill();
     }
-    let fastq_reader_result = fastq_reader
+    let feeder_result = feeder
         .join()
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("FASTQ fastq_reader thread panicked")));
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("FASTQ feeder thread panicked")));
     if let Some(t) = bam_thread {
         if let Ok(Err(e)) = t.join() {
             if stamper_result.is_ok() {
@@ -647,7 +752,6 @@ pub(crate) fn align_chunk(
         .unwrap_or_else(|_| Err(anyhow::anyhow!("pairs parser thread panicked")));
     let fastp_status = fastp.wait().context("wait for fastp")?;
     let bwa_status = bwa.wait().context("wait for bwa-mem3")?;
-    fastq_reader_result.context("stream R1/R3")?;
     if !fastp_status.success() {
         bail!("fastp failed: {fastp_status}")
     }
@@ -656,6 +760,14 @@ pub(crate) fn align_chunk(
     }
     let counts = pairs_result?;
     stamper_result?;
+    let (_fed_pairs, barcode_stats) = feeder_result.context("stream R1/mate")?;
+    if let Some(stats) = barcode_stats {
+        let qc_dir = c.output_dir.join("qc");
+        fs::create_dir_all(&qc_dir)?;
+        let path = qc_dir.join(format!("barcode-chunk-{chunk:04}.json"));
+        serde_json::to_writer(File::create(&path)?, &stats)
+            .with_context(|| format!("write {}", path.display()))?;
+    }
     let barcode_missing = missing_count();
     let result = ChunkResult {
         pairs: pairs_path,
@@ -687,6 +799,7 @@ fn stamp_sam(
     mut bam: Option<UnixStream>,
     mut pairs: UnixStream,
     cancel: &AtomicBool,
+    qname_cb: bool,
 ) -> Result<()> {
     let mut reader = BufReader::with_capacity(1024 * 1024, input);
     let mut line = Vec::new();
@@ -717,14 +830,31 @@ fn stamp_sam(
             end
         };
         let qname_end = line[..end].iter().position(|b| *b == b'\t').unwrap_or(end);
-        let cb = map.get(&line[..qname_end]);
-        if cb.is_none() {
-            missing += 1;
-        }
+        let qname = &line[..qname_end];
+        let (cb, display_qname): (Option<&[u8]>, &[u8]) = if qname_cb {
+            if let Some(rest) = qname.strip_prefix(b"CB=") {
+                if let Some(split) = rest.iter().position(|b| *b == b';') {
+                    (Some(&rest[..split]), &rest[split + 1..])
+                } else {
+                    missing += 1;
+                    (None, qname)
+                }
+            } else {
+                missing += 1;
+                (None, qname)
+            }
+        } else {
+            let cb = map.get(qname).map(Vec::as_slice);
+            if cb.is_none() {
+                missing += 1;
+            }
+            (cb, qname)
+        };
         out.clear();
-        out.extend_from_slice(&line[..end]);
+        out.extend_from_slice(display_qname);
+        out.extend_from_slice(&line[qname_end..end]);
         out.extend_from_slice(b"\tCB:Z:");
-        out.extend_from_slice(cb.map(Vec::as_slice).unwrap_or(b"."));
+        out.extend_from_slice(cb.unwrap_or(b"."));
         out.push(b'\n');
         if let Some(w) = bam.as_mut() {
             w.write_all(&out)?;
@@ -791,6 +921,34 @@ fn sort_pairs(c: &DropletConfig, input: &Path, output: &Path, logs: &Path) -> Re
             logs.join("sort.log").display()
         )
     }
+    Ok(())
+}
+
+fn build_scool(c: &DropletConfig, pairs: &Path, qc_dir: &Path, logs: &Path) -> Result<()> {
+    let matrix_dir = c.output_dir.join("matrix");
+    fs::create_dir_all(&matrix_dir)?;
+    let out = matrix_dir.join(format!("{}.scool", c.prefix));
+    if out.exists() {
+        fs::remove_file(&out)?;
+    }
+    let status = stage_command(Stage::BuildScool)?
+        .arg(pairs)
+        .arg(&c.chromsizes)
+        .arg(qc_dir.join("per_cell.tsv"))
+        .arg(&out)
+        .arg(c.matrix.scool_bin_size.to_string())
+        .arg(c.matrix.scool_min_pairs.to_string())
+        .arg(&c.assembly)
+        .stderr(Stdio::from(File::create(logs.join("scool.log"))?))
+        .status()
+        .context("run scool builder")?;
+    if !status.success() {
+        bail!(
+            "scool builder failed: {status}; inspect {}",
+            logs.join("scool.log").display()
+        )
+    }
+    eprintln!("event=scool_done path={}", out.display());
     Ok(())
 }
 

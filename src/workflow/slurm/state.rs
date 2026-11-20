@@ -29,6 +29,9 @@ pub(crate) struct Jobs {
     pub(crate) run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) group_id: Option<String>,
+    /// `bulk`, `droplet_three_read` or `two_read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout: Option<String>,
     pub(crate) chunks: usize,
     pub(crate) index: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

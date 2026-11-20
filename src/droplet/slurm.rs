@@ -55,8 +55,8 @@ fn plan_chunks(c: &DropletConfig) -> Result<usize> {
     }
     let size = crate::cli::index::parse_chunk_size(OsStr::new(&c.chunk_size))?;
     let r1 = fs::metadata(&c.read1)?.len();
-    let r3 = fs::metadata(&c.read3)?.len();
-    let chunks = usize::try_from(r1.max(r3).div_ceil(size))?;
+    let mate2 = fs::metadata(c.mate2()?)?.len();
+    let chunks = usize::try_from(r1.max(mate2).div_ceil(size))?;
     if !(1..=256).contains(&chunks) {
         bail!("estimated droplet chunk count {chunks} is outside 1..=256; increase chunk_size")
     }
@@ -101,9 +101,19 @@ fn ensure_sbatch() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: bool) -> Result<()> {
+pub(crate) fn submit(
+    config: &Path,
+    args: SlurmOptions,
+    check: bool,
+    keep_bam: bool,
+    keep_pairs: bool,
+) -> Result<()> {
     let (mut c, _base) = DropletConfig::load(config)?;
     c.keep_bam |= keep_bam;
+    if keep_pairs {
+        c.keep_pairs = true;
+        c.compressed_pairs = false;
+    }
     let chunks = plan_chunks(&c)?;
     let parallel = args.max_parallel.unwrap_or(c.jobs).clamp(1, chunks);
     let (prepare_cpus, chunk_cpus, finish_cpus) = job_cpus(&c, &args);
@@ -114,7 +124,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
 
     if check {
         println!(
-            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: prepare (index + barcode preprocessing) -> chunk array -> finish (merge/sort/dedup/QC/matrix)",
+            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: index/prepare -> chunk array -> finish (merge/sort/dedup/QC/matrix)",
             c.output_dir.display(),
             chunks,
             parallel,
@@ -162,7 +172,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
     serde_yaml::to_writer(File::create(&plan_path)?, &plan)?;
     fs::write(out.join("work-dir.txt"), format!("{}\n", work.display()))?;
 
-    if plan.config.cell_barcode_process_mode == "post" {
+    if plan.config.barcode_mode() == "post" {
         write_task_script(
             &work.join("index.sh"),
             &exe,
@@ -211,6 +221,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
         schema: SCHEMA,
         run_id,
         group_id: Some(group_id),
+        layout: Some(plan.config.sequencing_layout.clone()),
         chunks,
         index: None,
         preprocessing: None,
@@ -219,7 +230,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
     };
     write_json(&jobs_file, &jobs)?;
 
-    let post = plan.config.cell_barcode_process_mode == "post";
+    let post = plan.config.barcode_mode() == "post";
     let mut submitted = Vec::new();
     let result = (|| -> Result<()> {
         let array = format!("0-{}%{parallel}", chunks - 1);
@@ -402,7 +413,17 @@ pub(crate) fn task(phase: &str, plan_path: &Path, chunk: Option<usize>) -> Resul
 
 fn prepare(plan: &SlurmPlan) -> Result<()> {
     index_phase(plan)?;
-    barcode_preprocessing_phase(plan)
+    let c = &plan.config;
+    if c.is_two_read() {
+        let chosen = crate::droplet::two_read::resolve_orientation(c, &c.index())?;
+        eprintln!(
+            "event=droplet_slurm_prepare chunks={} barcode_orientation={chosen}",
+            plan.chunks
+        );
+    } else {
+        barcode_preprocessing_phase(plan)?;
+    }
+    Ok(())
 }
 
 fn index_phase(plan: &SlurmPlan) -> Result<()> {
@@ -468,7 +489,7 @@ fn chunk_task(plan: &SlurmPlan, chunk: usize) -> Result<()> {
         &index_dir,
         &sidecar_dir,
         chunk,
-        c.cell_barcode_process_mode != "post",
+        !c.is_two_read() && c.barcode_mode() != "post",
         plan.keep_bam,
         &chunk_dir,
         &logs,

@@ -105,6 +105,7 @@ fn run(
             ..Resources::default()
         };
         let mut c = Config {
+            sequencing_layout: "bulk".into(),
             assembly,
             chromsizes,
             fragments,

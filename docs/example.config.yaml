@@ -2,6 +2,10 @@
 # Save with `rust-hic example-config > config.yaml`, then edit the paths.
 # Relative paths are resolved against this configuration file's directory.
 
+# Pipeline layout: `bulk` (default). Droplet configs use the droplet schema
+# with `sequencing_layout: droplet_three_read` or `two_read`.
+sequencing_layout: bulk
+
 # Required genome metadata. Chromosome names must match the reference and fragments.
 assembly: hg38
 chromsizes: hg38.chrom.sizes
