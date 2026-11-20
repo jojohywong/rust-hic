@@ -228,11 +228,22 @@ pub(crate) fn sbatch_named(
     no_requeue: bool,
 ) -> Result<String> {
     let mut cmd = Command::new("sbatch");
+    // Array elements are independent chunk tasks: one node and one task each.
+    // Prepare/finish may request multiple nodes for scheduler compatibility.
+    let nodes = if array.is_some() { 1 } else { args.nodes.unwrap_or(1).max(1) };
+    let tasks_per_node = if array.is_some() {
+        1
+    } else {
+        args.ntasks_per_node.unwrap_or(1).max(1)
+    };
     cmd.arg("--parsable")
         .arg(format!("--job-name={name}"))
-        .arg("--nodes=1")
-        .arg("--ntasks=1")
-        .arg(format!("--cpus-per-task={cpus}"))
+        .arg(format!("--nodes={nodes}"))
+        .arg(format!("--ntasks={}", nodes * tasks_per_node));
+    if tasks_per_node > 1 {
+        cmd.arg(format!("--ntasks-per-node={tasks_per_node}"));
+    }
+    cmd.arg(format!("--cpus-per-task={cpus}"))
         .arg(format!("--mem={mem}"))
         .arg(format!("--time={time}"))
         .arg("--open-mode=append")
@@ -242,6 +253,9 @@ pub(crate) fn sbatch_named(
     }
     if let Some(partition) = &args.partition {
         cmd.arg(format!("--partition={partition}"));
+    }
+    if let Some(qos) = &args.qos {
+        cmd.arg(format!("--qos={qos}"));
     }
     if let Some(dependency) = dependency {
         cmd.arg(format!("--dependency={dependency}"));

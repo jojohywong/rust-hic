@@ -64,7 +64,7 @@ pub(crate) fn ensure_index(c: &DropletConfig, log: &Path) -> Result<PathBuf> {
     let status = Command::new(exe)
         .arg("index")
         .arg(&c.read1)
-        .arg(&c.read3)
+        .arg(c.mate2()?)
         .arg("-o")
         .arg(&dir)
         .arg("--chunk-size")

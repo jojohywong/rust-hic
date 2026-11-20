@@ -114,8 +114,12 @@ fn part_key(seq: &[u8]) -> [u8; 6] {
 
 impl Matcher {
     fn load(c: &DropletConfig, orientation: &'static str) -> Result<Self> {
-        let file = File::open(&c.whitelist)
-            .with_context(|| format!("open whitelist {}", c.whitelist.display()))?;
+        let whitelist = c
+            .whitelist
+            .as_deref()
+            .context("whitelist is required for the droplet barcode prepass")?;
+        let file = File::open(whitelist)
+            .with_context(|| format!("open whitelist {}", whitelist.display()))?;
         let mut entries = Vec::new();
         for (i, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
@@ -142,7 +146,7 @@ impl Matcher {
             entries.push(a);
         }
         if entries.is_empty() {
-            bail!("whitelist is empty: {}", c.whitelist.display())
+            bail!("whitelist is empty: {}", whitelist.display())
         }
         Ok(Self::from_entries(
             entries,
@@ -351,7 +355,11 @@ fn open_barcode_read(path: &Path, threads: u32) -> Result<Box<dyn BufRead>> {
 
 /// Guess orientation on a small prefix of R2 by counting exact matches.
 fn detect_orientation(c: &DropletConfig) -> Result<&'static str> {
-    let mut reader = open_barcode_read(&c.barcode_read, c.barcode.threads)?;
+    let barcode_read = c
+        .barcode_read
+        .as_deref()
+        .context("barcode_read is required for the droplet barcode prepass")?;
+    let mut reader = open_barcode_read(barcode_read, c.barcode.threads)?;
     let (matcher_rc, matcher_fw) = (
         Matcher::load(c, "rc")?,
         Matcher::load(c, "forward")?,
@@ -514,8 +522,12 @@ pub(crate) fn prepass(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> R
     let mut stats = vec![BarcodeStats::default(); index.chunks];
     let mut writer =
         BufWriter::with_capacity(1024 * 1024, File::create(dir.join("chunk-0000.tsv"))?);
+    let barcode_read = c
+        .barcode_read
+        .as_deref()
+        .context("barcode_read is required for the droplet barcode prepass")?;
     let decode_threads = c.barcode.threads.clamp(1, 4);
-    let mut reader = open_barcode_read(&c.barcode_read, decode_threads)?;
+    let mut reader = open_barcode_read(barcode_read, decode_threads)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(c.barcode.threads as usize)
         .build()

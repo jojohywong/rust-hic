@@ -32,6 +32,62 @@ pub(crate) fn main() {
         std::process::exit(1)
     }
 }
+fn canonical_rank(name: &str) -> (u8, u32) {
+    let short = name.strip_prefix("chr").unwrap_or(name);
+    match short {
+        "X" => (1, 23),
+        "Y" => (1, 24),
+        "M" | "MT" => (1, 25),
+        value if value.chars().all(|c| c.is_ascii_digit()) && !value.is_empty() => {
+            (0, value.parse().unwrap_or(0))
+        }
+        _ => (2, 0),
+    }
+}
+
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut left = a.as_bytes();
+    let mut right = b.as_bytes();
+    while !left.is_empty() && !right.is_empty() {
+        if left[0].is_ascii_digit() && right[0].is_ascii_digit() {
+            let left_end = left.iter().position(|c| !c.is_ascii_digit()).unwrap_or(left.len());
+            let right_end = right.iter().position(|c| !c.is_ascii_digit()).unwrap_or(right.len());
+            let left_number: u128 = std::str::from_utf8(&left[..left_end]).unwrap_or("0").parse().unwrap_or(0);
+            let right_number: u128 = std::str::from_utf8(&right[..right_end]).unwrap_or("0").parse().unwrap_or(0);
+            match left_number.cmp(&right_number) {
+                std::cmp::Ordering::Equal => {}
+                other => return other,
+            }
+            left = &left[left_end..];
+            right = &right[right_end..];
+        } else {
+            match left[0].cmp(&right[0]) {
+                std::cmp::Ordering::Equal => {}
+                other => return other,
+            }
+            left = &left[1..];
+            right = &right[1..];
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_rank, natural_cmp};
+
+    #[test]
+    fn chromosome_order_is_natural() {
+        assert!(canonical_rank("chr2") < canonical_rank("chr10"));
+        assert!(canonical_rank("chr10") < canonical_rank("chrX"));
+        assert!(canonical_rank("chrX") < canonical_rank("chrM"));
+        assert_eq!(
+            natural_cmp("chr2_random", "chr10_random"),
+            std::cmp::Ordering::Less
+        );
+    }
+}
+
 fn run() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 8 {
@@ -50,8 +106,8 @@ fn run() -> Result<()> {
     if threads == 0 || limit < 1024 * 1024 {
         bail!("invalid thread count or run MiB")
     };
-    let mut order = HashMap::new();
-    let mut chroms = Vec::new();
+    let mut chroms: Vec<(String, u64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for line in BufReader::new(File::open(&args[1])?).lines() {
         let l = line?;
         let a: Vec<_> = l.split_whitespace().collect();
@@ -62,7 +118,7 @@ fn run() -> Result<()> {
             bail!("invalid chromsizes")
         };
         let n: u64 = a[1].parse()?;
-        if n == 0 || order.insert(a[0].to_owned(), chroms.len()).is_some() {
+        if n == 0 || !seen.insert(a[0].to_owned()) {
             bail!("invalid chromsize")
         };
         chroms.push((a[0].to_owned(), n))
@@ -70,6 +126,17 @@ fn run() -> Result<()> {
     if chroms.is_empty() {
         bail!("empty chromsizes")
     };
+    // Natural chromosome order (chr1, chr2, ..., chr10, chrX, chrY, chrM),
+    // independent of the order in the chrom.sizes file.
+    chroms.sort_by(|a, b| {
+        canonical_rank(&a.0)
+            .cmp(&canonical_rank(&b.0))
+            .then_with(|| natural_cmp(&a.0, &b.0))
+    });
+    let mut order = HashMap::new();
+    for (index, (name, _)) in chroms.iter().enumerate() {
+        order.insert(name.clone(), index);
+    }
     if args[2].contains(['\r', '\n']) {
         bail!("invalid assembly")
     };

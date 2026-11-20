@@ -2,6 +2,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::{self, File},
     path::{Path, PathBuf},
 };
@@ -9,12 +10,20 @@ use std::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DropletConfig {
+    /// Layout: `droplet` (3-read) or `two_read` (GAGE-seq / Spatial ATAC-Hi-C).
+    #[serde(default = "default_layout")]
+    pub sequencing_layout: String,
     /// R1: gDNA (Nextera read 1 side).
     pub read1: PathBuf,
-    /// R2: cell barcode read.
-    pub barcode_read: PathBuf,
-    /// R3: gDNA mate.
-    pub read3: PathBuf,
+    /// R2 for 3-read: cell barcode read.
+    #[serde(default)]
+    pub barcode_read: Option<PathBuf>,
+    /// R3 for 3-read: gDNA mate.
+    #[serde(default)]
+    pub read3: Option<PathBuf>,
+    /// R2 for 2-read: barcode rounds + linker + genomic mate.
+    #[serde(default)]
+    pub read2: Option<PathBuf>,
     /// Reference FASTA (same path as the aligner index prefix).
     pub reference: PathBuf,
     /// bwa-mem3/bwa-mem2 index prefix.
@@ -27,8 +36,9 @@ pub(crate) struct DropletConfig {
     pub aligner: String,
     /// Chromosome sizes for pair sorting and QC.
     pub chromsizes: PathBuf,
-    /// 16 bp barcode whitelist (one barcode per line).
-    pub whitelist: PathBuf,
+    /// 16 bp barcode whitelist (3-read; one barcode per line).
+    #[serde(default)]
+    pub whitelist: Option<PathBuf>,
     /// New or reusable output directory.
     pub output_dir: PathBuf,
     /// Output prefix (matrix/pairs/QC names).
@@ -101,6 +111,12 @@ pub(crate) struct DropletConfig {
     pub sort_run_mib: usize,
     #[serde(default)]
     pub barcode: BarcodeConfig,
+    /// Two-read barcode rounds (takes precedence over `barcode` in two_read mode).
+    #[serde(default)]
+    pub cell_barcode: Option<CellBarcodeConfig>,
+    /// Fixed 5'/3' trimming applied before alignment (two_read mode).
+    #[serde(default)]
+    pub additional_trimming: AdditionalTrimming,
     #[serde(default)]
     pub sam: SamConfig,
     #[serde(default)]
@@ -133,6 +149,127 @@ impl Default for BarcodeConfig {
             orientation: "rc".into(),
             max_mismatch: 1,
             threads: default_barcode_threads(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AdditionalTrimming {
+    pub read1_five_prime_bases: usize,
+    pub read2_five_prime_bases: usize,
+    pub read1_three_prime_bases: usize,
+    pub read2_three_prime_bases: usize,
+}
+
+impl Default for AdditionalTrimming {
+    fn default() -> Self {
+        Self {
+            read1_five_prime_bases: 0,
+            read2_five_prime_bases: 0,
+            read1_three_prime_bases: 0,
+            read2_three_prime_bases: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CellBarcodeConfig {
+    /// `forward`, `reverse_complement`/`rc`, or `auto`.
+    pub barcode_orientation: String,
+    pub barcode_rounds: Vec<BarcodeRound>,
+    pub linker_regions: Vec<LinkerRegion>,
+    pub barcode_structure: BarcodeStructure,
+    pub valid_barcode_pairs_file: Option<PathBuf>,
+    pub unique_molecule_identifier: Option<UniqueMoleculeIdentifier>,
+}
+
+impl Default for CellBarcodeConfig {
+    fn default() -> Self {
+        Self {
+            barcode_orientation: "forward".into(),
+            barcode_rounds: Vec::new(),
+            linker_regions: Vec::new(),
+            barcode_structure: BarcodeStructure::default(),
+            valid_barcode_pairs_file: None,
+            unique_molecule_identifier: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BarcodeRound {
+    pub round_name: String,
+    #[serde(default)]
+    pub first_base: Option<usize>,
+    #[serde(default)]
+    pub last_base: Option<usize>,
+    #[serde(default)]
+    pub segments: Vec<BarcodeSegment>,
+    pub whitelist_file: PathBuf,
+    #[serde(default)]
+    pub whitelist_sequence_column: Option<usize>,
+    #[serde(default)]
+    pub whitelist_identifier_column: Option<usize>,
+    #[serde(default = "default_identifier")]
+    pub barcode_identifier: String,
+    #[serde(default = "default_round_mismatch")]
+    pub maximum_mismatches: u8,
+    #[serde(default)]
+    pub orientation: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BarcodeSegment {
+    pub first_base: usize,
+    pub last_base: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinkerRegion {
+    pub region_name: String,
+    pub first_base: usize,
+    pub last_base: usize,
+    #[serde(default)]
+    pub expected_sequence: Option<String>,
+    #[serde(default)]
+    pub maximum_mismatches: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct BarcodeStructure {
+    pub order: Vec<String>,
+    pub separator: String,
+}
+
+impl Default for BarcodeStructure {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            separator: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UniqueMoleculeIdentifier {
+    pub enabled: bool,
+    pub first_base: usize,
+    pub last_base: usize,
+}
+
+impl Default for UniqueMoleculeIdentifier {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            first_base: 0,
+            last_base: 0,
         }
     }
 }
@@ -196,6 +333,15 @@ impl Default for MatrixConfig {
     }
 }
 
+fn default_layout() -> String {
+    "droplet".into()
+}
+fn default_identifier() -> String {
+    "sequence".into()
+}
+fn default_round_mismatch() -> u8 {
+    1
+}
 fn default_bwa_mem3() -> PathBuf {
     "/projects/b1042/YueLab/JW/rusthic/bin/bwa-mem3".into()
 }
@@ -277,19 +423,31 @@ impl DropletConfig {
             File::open(&path).with_context(|| format!("open {}", path.display()))?,
         )
         .with_context(|| format!("parse {}", path.display()))?;
+        c.read1 = resolve(&base, std::mem::take(&mut c.read1));
+        c.reference = resolve(&base, std::mem::take(&mut c.reference));
+        c.aligner_index = resolve(&base, std::mem::take(&mut c.aligner_index));
+        c.aligner_executable = resolve(&base, std::mem::take(&mut c.aligner_executable));
+        c.chromsizes = resolve(&base, std::mem::take(&mut c.chromsizes));
+        c.output_dir = resolve(&base, std::mem::take(&mut c.output_dir));
+        c.fastp_executable = resolve(&base, std::mem::take(&mut c.fastp_executable));
         for p in [
-            &mut c.read1,
+            &mut c.read2,
             &mut c.barcode_read,
             &mut c.read3,
-            &mut c.reference,
-            &mut c.aligner_index,
-            &mut c.aligner_executable,
-            &mut c.chromsizes,
             &mut c.whitelist,
-            &mut c.output_dir,
-            &mut c.fastp_executable,
         ] {
-            *p = resolve(&base, std::mem::take(p));
+            if let Some(path) = p.as_mut() {
+                *path = resolve(&base, std::mem::take(path));
+            }
+        }
+        if let Some(cell) = c.cell_barcode.as_mut() {
+            for round in &mut cell.barcode_rounds {
+                round.whitelist_file =
+                    resolve(&base, std::mem::take(&mut round.whitelist_file));
+            }
+            if let Some(path) = cell.valid_barcode_pairs_file.as_mut() {
+                *path = resolve(&base, std::mem::take(path));
+            }
         }
         if let Some(p) = c.scratch_dir.take() {
             c.scratch_dir = Some(resolve(&base, p));
@@ -324,22 +482,34 @@ impl DropletConfig {
         if self.sort_run_mib == 0 {
             bail!("sort_run_mib must be positive")
         }
-        if self.barcode.slice_len == 0 || self.barcode.slice_len > 16 {
-            bail!("barcode.slice_len must be 1..=16")
+        match self.sequencing_layout.as_str() {
+            "droplet" | "two_read" => {}
+            other => bail!("sequencing_layout must be droplet or two_read, got {other:?}"),
         }
-        if self.barcode.max_mismatch > 2 {
-            bail!("barcode.max_mismatch currently supports 0, 1 or 2")
-        }
-        if self.barcode.threads == 0 || self.barcode.threads > 32 {
-            bail!("barcode.threads must be 1..=32")
+        if self.is_two_read() {
+            if self.barcode.slice_len == 0 || self.barcode.slice_len > 16 {
+                // The legacy single-barcode settings are ignored in two_read mode.
+            }
+        } else {
+            if self.barcode.slice_len == 0 || self.barcode.slice_len > 16 {
+                bail!("barcode.slice_len must be 1..=16")
+            }
+            if self.barcode.max_mismatch > 2 {
+                bail!("barcode.max_mismatch currently supports 0, 1 or 2")
+            }
+            if self.barcode.threads == 0 || self.barcode.threads > 32 {
+                bail!("barcode.threads must be 1..=32")
+            }
+            match self.barcode.orientation.as_str() {
+                "rc" | "forward" | "auto" => {}
+                other => bail!(
+                    "barcode.orientation must be rc, forward or auto, got {other:?}"
+                ),
+            }
         }
         match self.cb_join.as_str() {
             "fused" | "post" => {}
             other => bail!("cb_join must be fused or post, got {other:?}"),
-        }
-        match self.barcode.orientation.as_str() {
-            "rc" | "forward" | "auto" => {}
-            other => bail!("barcode.orientation must be rc, forward or auto, got {other:?}"),
         }
         match self.aligner.as_str() {
             "bwa-mem3" | "bwa" => {}
@@ -366,14 +536,38 @@ impl DropletConfig {
         }
         for (label, p) in [
             ("read1", &self.read1),
-            ("barcode_read", &self.barcode_read),
-            ("read3", &self.read3),
             ("reference", &self.reference),
             ("chromsizes", &self.chromsizes),
-            ("whitelist", &self.whitelist),
         ] {
             if !p.is_file() {
                 bail!("{label} is not a regular file: {}", p.display())
+            }
+        }
+        if self.is_two_read() {
+            let read2 = self
+                .read2
+                .as_deref()
+                .context("read2 is required when sequencing_layout is two_read")?;
+            if !read2.is_file() {
+                bail!("read2 is not a regular file: {}", read2.display())
+            }
+            let cell = self
+                .cell_barcode
+                .as_ref()
+                .context("cell_barcode is required when sequencing_layout is two_read")?;
+            self.validate_two_read(cell)?;
+        } else {
+            for (label, p) in [
+                ("barcode_read", &self.barcode_read),
+                ("read3", &self.read3),
+                ("whitelist", &self.whitelist),
+            ] {
+                let p = p
+                    .as_deref()
+                    .with_context(|| format!("{label} is required for droplet layout"))?;
+                if !p.is_file() {
+                    bail!("{label} is not a regular file: {}", p.display())
+                }
             }
         }
         let suffixes: &[&str] = if self.aligner == "bwa" {
@@ -400,6 +594,147 @@ impl DropletConfig {
                 "fastp executable is not a file: {}",
                 self.fastp_executable.display()
             )
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_two_read(&self) -> bool {
+        self.sequencing_layout == "two_read"
+    }
+
+    /// Second indexed mate: R3 for droplet, R2 for two_read.
+    pub(crate) fn mate2(&self) -> Result<&Path> {
+        if self.is_two_read() {
+            self.read2
+                .as_deref()
+                .context("read2 is required when sequencing_layout is two_read")
+        } else {
+            self.read3
+                .as_deref()
+                .context("read3 is required for droplet layout")
+        }
+    }
+
+    fn validate_two_read(&self, cell: &CellBarcodeConfig) -> Result<()> {
+        if cell.barcode_rounds.is_empty() {
+            bail!("cell_barcode.barcode_rounds must not be empty")
+        }
+        match cell.barcode_orientation.as_str() {
+            "forward" | "rc" | "reverse_complement" | "auto" => {}
+            other => bail!(
+                "cell_barcode.barcode_orientation must be forward, rc or auto, got {other:?}"
+            ),
+        }
+        let mut names = HashSet::new();
+        for round in &cell.barcode_rounds {
+            if round.round_name.is_empty() || !names.insert(round.round_name.clone()) {
+                bail!("barcode round names must be non-empty and unique")
+            }
+            let segments: Vec<(usize, usize)> = if round.segments.is_empty() {
+                vec![(
+                    round
+                        .first_base
+                        .context("barcode round needs first_base/last_base or segments")?,
+                    round
+                        .last_base
+                        .context("barcode round needs first_base/last_base or segments")?,
+                )]
+            } else {
+                round
+                    .segments
+                    .iter()
+                    .map(|s| (s.first_base, s.last_base))
+                    .collect()
+            };
+            let mut previous_end = 0;
+            for (first, last) in segments {
+                if first == 0 || last < first || first <= previous_end {
+                    bail!(
+                        "round {} has invalid or unsorted 1-based segment {first}..{last}",
+                        round.round_name
+                    )
+                }
+                previous_end = last;
+            }
+            if !round.whitelist_file.is_file() {
+                bail!(
+                    "round {} whitelist is not a file: {}",
+                    round.round_name,
+                    round.whitelist_file.display()
+                )
+            }
+            match round.barcode_identifier.as_str() {
+                "sequence" | "well_name" => {}
+                other => bail!(
+                    "round {} barcode_identifier must be sequence or well_name, got {other:?}",
+                    round.round_name
+                ),
+            }
+            if round.maximum_mismatches > 2 {
+                bail!(
+                    "round {} maximum_mismatches must be 0..=2",
+                    round.round_name
+                )
+            }
+            if let Some(column) = round.whitelist_sequence_column {
+                if column == 0 {
+                    bail!("whitelist_sequence_column is 1-based")
+                }
+            }
+            if let Some(column) = round.whitelist_identifier_column {
+                if column == 0 {
+                    bail!("whitelist_identifier_column is 1-based")
+                }
+            }
+            if let Some(orientation) = &round.orientation {
+                match orientation.as_str() {
+                    "forward" | "rc" | "reverse_complement" => {}
+                    other => bail!(
+                        "round {} orientation must be forward or rc, got {other:?}",
+                        round.round_name
+                    ),
+                }
+            }
+        }
+        if !cell.barcode_structure.order.is_empty() {
+            if cell.barcode_structure.order.len() != cell.barcode_rounds.len() {
+                bail!("barcode_structure.order must list every barcode round")
+            }
+            for name in &cell.barcode_structure.order {
+                if !names.contains(name) {
+                    bail!("barcode_structure.order references unknown round {name:?}")
+                }
+            }
+        }
+        for linker in &cell.linker_regions {
+            if linker.first_base == 0 || linker.last_base < linker.first_base {
+                bail!(
+                    "linker {} has invalid 1-based range",
+                    linker.region_name
+                )
+            }
+            let len = linker.last_base - linker.first_base + 1;
+            if let Some(expected) = &linker.expected_sequence {
+                if expected.len() != len {
+                    bail!(
+                        "linker {} expected_sequence length {} does not match region length {len}",
+                        linker.region_name,
+                        expected.len()
+                    )
+                }
+                if !expected
+                    .bytes()
+                    .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T' | b'N'))
+                {
+                    bail!("linker {} expected_sequence must be ACGTN", linker.region_name)
+                }
+            }
+            if linker.maximum_mismatches > len {
+                bail!(
+                    "linker {} maximum_mismatches exceeds region length",
+                    linker.region_name
+                )
+            }
         }
         Ok(())
     }

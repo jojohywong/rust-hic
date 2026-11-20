@@ -81,6 +81,9 @@ pub(crate) struct SlurmOptions {
     /// Slurm partition, if the cluster requires one.
     #[arg(long)]
     pub(crate) partition: Option<String>,
+    /// Slurm QOS, if the cluster requires one.
+    #[arg(long)]
+    pub(crate) qos: Option<String>,
     /// Default time limit for each stage (default: 04:00:00).
     #[arg(long)]
     pub(crate) time: Option<String>,
@@ -102,6 +105,13 @@ pub(crate) struct SlurmOptions {
     /// Memory for sorting, merging, and matrix creation (default: 64G).
     #[arg(long)]
     pub(crate) finish_mem: Option<String>,
+    /// Number of nodes for non-array jobs (prepare/finish). Array chunk tasks
+    /// always run one chunk per node; the array spreads them across nodes.
+    #[arg(long)]
+    pub(crate) nodes: Option<usize>,
+    /// Tasks per node for non-array jobs (default: 1).
+    #[arg(long)]
+    pub(crate) ntasks_per_node: Option<usize>,
     /// Maximum concurrent alignment tasks (defaults to fastq.jobs).
     #[arg(long)]
     pub(crate) max_parallel: Option<usize>,

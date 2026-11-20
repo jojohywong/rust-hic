@@ -1,0 +1,56 @@
+sequencing_layout: two_read
+read1: /projects/b1042/YueLab/JW/rusthic_singlecell/bench/two_read/gage/raw/sra_pilot20M/SRR25388174_1.fastq.gz
+read2: /projects/b1042/YueLab/JW/rusthic_singlecell/bench/two_read/gage/raw/sra_pilot20M/SRR25388174_2.fastq.gz
+reference: /projects/b1042/YueLab/JW/references/bwamem2/hg38/hg38.fa
+aligner_index: /projects/b1042/YueLab/JW/references/bwamem2/hg38/hg38.fa
+aligner: bwa-mem3
+aligner_executable: /projects/b1042/YueLab/JW/rusthic/bin/bwa-mem3
+chromsizes: /projects/b1042/YueLab/JW/references/bwamem2/hg38/hg38.chrom.sizes
+output_dir: /projects/b1042/YueLab/JW/rusthic_singlecell/runs/two_read/GSM7657694_pilot20M
+prefix: GSM7657694_pilot20M
+assembly: hg38
+jobs: 2
+threads_per_job: 16
+fastp_threads: 4
+sort_threads: 16
+dedup:
+  max_mismatch: 500
+  workers: 8
+walks_policy: all
+sam:
+  min_mapq: 10
+  max_molecule_size: 750
+  max_inter_align_gap: 30
+cell_barcode:
+  barcode_orientation: forward
+  barcode_rounds:
+    - round_name: bc2
+      first_base: 1
+      last_base: 8
+      whitelist_file: /projects/b1042/YueLab/JW/rusthic_singlecell/bench/two_read/gage/whitelists/adaptor_Hi-C_bc2
+      whitelist_sequence_column: 3
+      whitelist_identifier_column: 1
+      barcode_identifier: well_name
+      maximum_mismatches: 1
+    - round_name: bc1
+      first_base: 24
+      last_base: 31
+      whitelist_file: /projects/b1042/YueLab/JW/rusthic_singlecell/bench/two_read/gage/whitelists/adaptor_Hi-C_bc1
+      whitelist_sequence_column: 3
+      whitelist_identifier_column: 1
+      barcode_identifier: well_name
+      maximum_mismatches: 1
+  linker_regions:
+    - region_name: linker2
+      first_base: 9
+      last_base: 23
+      expected_sequence: TGACTTGTAGTGCAG
+      maximum_mismatches: 5
+  barcode_structure:
+    order: [bc2, bc1]
+    separator: ","
+additional_trimming:
+  read1_five_prime_bases: 12
+  read2_five_prime_bases: 35
+  read1_three_prime_bases: 0
+  read2_three_prime_bases: 0

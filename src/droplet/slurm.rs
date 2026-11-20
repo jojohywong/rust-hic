@@ -55,8 +55,8 @@ fn plan_chunks(c: &DropletConfig) -> Result<usize> {
     }
     let size = crate::cli::index::parse_chunk_size(OsStr::new(&c.chunk_size))?;
     let r1 = fs::metadata(&c.read1)?.len();
-    let r3 = fs::metadata(&c.read3)?.len();
-    let chunks = usize::try_from(r1.max(r3).div_ceil(size))?;
+    let mate2 = fs::metadata(c.mate2()?)?.len();
+    let chunks = usize::try_from(r1.max(mate2).div_ceil(size))?;
     if !(1..=256).contains(&chunks) {
         bail!("estimated droplet chunk count {chunks} is outside 1..=256; increase chunk_size")
     }
@@ -104,7 +104,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
 
     if check {
         println!(
-            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: prepare (index + barcode prepass) -> chunk array -> finish (merge/sort/dedup/QC/matrix)",
+            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: prepare (index + {}) -> chunk array ({}) -> finish (merge/sort/dedup/QC/matrix)",
             c.output_dir.display(),
             chunks,
             parallel,
@@ -113,7 +113,17 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
             finish_cpus,
             prepare_mem,
             chunk_mem,
-            finish_mem
+            finish_mem,
+            if c.is_two_read() {
+                "barcode orientation"
+            } else {
+                "barcode prepass"
+            },
+            if c.is_two_read() {
+                "fused barcode + align"
+            } else {
+                "align"
+            }
         );
         return Ok(());
     }
@@ -306,16 +316,24 @@ fn prepare(plan: &SlurmPlan) -> Result<()> {
             plan.chunks
         )
     }
-    let prepass = barcode::prepass(c, &manifest, &c.scratch().join("barcodes"))?;
-    run::write_barcode_qc(&prepass, &c.output_dir.join("qc"))?;
-    eprintln!(
-        "event=droplet_slurm_prepare chunks={} assignable={}",
-        manifest.chunks,
-        prepass
-            .total
-            .exact
-            .saturating_add(prepass.total.corrected)
-    );
+    if c.is_two_read() {
+        let chosen = crate::droplet::two_read::resolve_orientation(c, &index_dir)?;
+        eprintln!(
+            "event=droplet_slurm_prepare chunks={} barcode_orientation={chosen}",
+            manifest.chunks
+        );
+    } else {
+        let prepass = barcode::prepass(c, &manifest, &c.scratch().join("barcodes"))?;
+        run::write_barcode_qc(&prepass, &c.output_dir.join("qc"))?;
+        eprintln!(
+            "event=droplet_slurm_prepare chunks={} assignable={}",
+            manifest.chunks,
+            prepass
+                .total
+                .exact
+                .saturating_add(prepass.total.corrected)
+        );
+    }
     Ok(())
 }
 
@@ -339,7 +357,7 @@ fn chunk_task(plan: &SlurmPlan, chunk: usize) -> Result<()> {
         &index_dir,
         &sidecar_dir,
         chunk,
-        c.cb_join != "post",
+        !c.is_two_read() && c.cb_join != "post",
         plan.keep_bam,
         &chunk_dir,
         &logs,

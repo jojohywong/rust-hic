@@ -6,5 +6,6 @@ mod index;
 mod qc;
 mod run;
 pub(crate) mod slurm;
+pub(crate) mod two_read;
 
 pub(crate) use run::run;
