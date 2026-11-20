@@ -12,6 +12,7 @@ assembly: hg38
 jobs: 3
 threads_per_job: 32
 fastp_threads: 8
+chunk_size: 4GiB
 sort_threads: 16
 dedup:
   max_mismatch: 500
