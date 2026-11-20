@@ -18,8 +18,8 @@ dedup:
   max_mismatch: 3
   workers: 8
 walks_policy: 5unique
-keep_bam: true
-atac_fragments: true
+keep_bam: false
+atac_fragments: false
 t5_shift: 4
 cell_barcode:
   barcode_orientation: forward
