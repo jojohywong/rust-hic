@@ -31,6 +31,8 @@ pub(crate) struct Jobs {
     pub(crate) group_id: Option<String>,
     pub(crate) chunks: usize,
     pub(crate) index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) preprocessing: Option<String>,
     pub(crate) alignment: Option<String>,
     pub(crate) finish: Option<String>,
 }

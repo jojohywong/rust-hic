@@ -54,6 +54,9 @@ pub(crate) struct DropletConfig {
     /// fastp worker threads per chunk.
     #[serde(default = "two")]
     pub fastp_threads: usize,
+    /// Decompression threads for reading the R1/R3 FASTQ streams.
+    #[serde(default = "default_fastq_reader_threads", alias = "fastq_reader_threads")]
+    pub fastq_reader_threads: u32,
     /// Target compressed chunk size accepted by the FASTQ indexer.
     #[serde(default = "default_chunk_size")]
     pub chunk_size: String,
@@ -63,18 +66,23 @@ pub(crate) struct DropletConfig {
     /// Retain BAM (per-chunk BAMs are removed after a successful merge).
     #[serde(default = "no")]
     pub keep_bam: bool,
-    /// Retain the final uncompressed pairs file (droplet default: true).
+    /// Retain the final pairs as a deliverable. The format is plain text unless
+    /// `compressed_pairs` is set.
     #[serde(default = "yes")]
     pub keep_pairs: bool,
-    /// Also write a BGZF-compressed `<prefix>.pairs.gz` with a pairix `.px2` index.
+    /// Retain the pairs as BGZF `<prefix>.pairs.gz` with a pairix `.px2` index.
+    /// This supersedes the plain file: with `keep_pairs: true` and
+    /// `compressed_pairs: true` only the compressed file is kept.
     #[serde(default)]
     pub compressed_pairs: bool,
-    /// `fused` joins CB during parsing; `post` aligns first and joins afterwards.
-    #[serde(default = "default_cb_join")]
-    pub cb_join: String,
-    /// In `post` mode, run the barcode prepass concurrently with alignment.
-    #[serde(default)]
-    pub prepass_overlap: bool,
+    /// How cell barcodes are attached: `fused` stamps them during parsing,
+    /// `post` aligns first and joins afterwards, `none` has no barcode read.
+    /// `cb_join` remains accepted as an alias for existing configs.
+    #[serde(default = "default_cell_barcode_process_mode", alias = "cb_join")]
+    pub cell_barcode_process_mode: String,
+    /// In `post` mode, run the barcode preprocessing concurrently with alignment.
+    #[serde(default, alias = "prepass_overlap")]
+    pub barcode_preprocessing_overlap: bool,
     /// Reuse barcode sidecar files from a previous run.
     #[serde(default = "yes")]
     pub reuse_barcodes: bool,
@@ -120,9 +128,9 @@ pub(crate) struct BarcodeConfig {
     pub orientation: String,
     /// Maximum Hamming distance considered (0, 1 or 2 implemented).
     pub max_mismatch: u8,
-    /// Decompression threads for the R2 barcode prepass (rapidgzip).
-    #[serde(default = "default_barcode_threads")]
-    pub threads: u32,
+    /// Threads used to match R2 barcodes against the whitelist.
+    #[serde(default = "default_barcode_threads", alias = "threads")]
+    pub matcher_threads: u32,
 }
 
 impl Default for BarcodeConfig {
@@ -132,7 +140,7 @@ impl Default for BarcodeConfig {
             slice_len: 16,
             orientation: "rc".into(),
             max_mismatch: 1,
-            threads: default_barcode_threads(),
+            matcher_threads: default_barcode_threads(),
         }
     }
 }
@@ -217,7 +225,7 @@ fn default_search_mib() -> usize {
 fn default_barcode_threads() -> u32 {
     8
 }
-fn default_cb_join() -> String {
+fn default_cell_barcode_process_mode() -> String {
     "fused".into()
 }
 fn default_assembly() -> String {
@@ -234,6 +242,9 @@ fn one() -> usize {
 }
 fn two() -> usize {
     2
+}
+fn default_fastq_reader_threads() -> u32 {
+    4
 }
 fn four() -> usize {
     4
@@ -330,12 +341,17 @@ impl DropletConfig {
         if self.barcode.max_mismatch > 2 {
             bail!("barcode.max_mismatch currently supports 0, 1 or 2")
         }
-        if self.barcode.threads == 0 || self.barcode.threads > 32 {
-            bail!("barcode.threads must be 1..=32")
+        if self.barcode.matcher_threads == 0 || self.barcode.matcher_threads > 32 {
+            bail!("barcode.matcher_threads must be 1..=32")
         }
-        match self.cb_join.as_str() {
-            "fused" | "post" => {}
-            other => bail!("cb_join must be fused or post, got {other:?}"),
+        if self.fastq_reader_threads == 0 || self.fastq_reader_threads > 16 {
+            bail!("fastq_reader_threads must be 1..=16")
+        }
+        match self.cell_barcode_process_mode.as_str() {
+            "fused" | "post" | "none" => {}
+            other => bail!(
+                "cell_barcode_process_mode must be fused, post or none, got {other:?}"
+            ),
         }
         match self.barcode.orientation.as_str() {
             "rc" | "forward" | "auto" => {}

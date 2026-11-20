@@ -17,7 +17,7 @@ fn read_jobs(output_dir: &Path) -> Result<(PathBuf, Jobs)> {
             .group_id
             .as_ref()
             .is_some_and(|id| id.len() != 8 || !id.bytes().all(|b| b.is_ascii_alphanumeric()))
-        || [&jobs.index, &jobs.alignment, &jobs.finish]
+        || [&jobs.index, &jobs.preprocessing, &jobs.alignment, &jobs.finish]
             .into_iter()
             .flatten()
             .any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()))
@@ -28,7 +28,7 @@ fn read_jobs(output_dir: &Path) -> Result<(PathBuf, Jobs)> {
 }
 
 fn job_ids(jobs: &Jobs) -> Vec<&str> {
-    [&jobs.index, &jobs.alignment, &jobs.finish]
+    [&jobs.index, &jobs.preprocessing, &jobs.alignment, &jobs.finish]
         .into_iter()
         .flatten()
         .map(String::as_str)

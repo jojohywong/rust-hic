@@ -96,7 +96,7 @@ fn chromap_bam(
         let second = &f2;
         scope.spawn(move || {
             let result =
-                crate::fastq_index::stream_split(index, i, [first, second], cancel_ref).map(|_| ());
+                crate::fastq_index::stream_split(index, i, [first, second], cancel_ref, 1).map(|_| ());
             let _ = worker.send(result);
         });
         let bam_path = dir.join("alignments.bam");
@@ -234,6 +234,7 @@ pub(super) fn align_one(
                             i,
                             [&first, &second],
                             &worker_cancel,
+                            1,
                         )?;
                         writeln!(
                             log,

@@ -188,9 +188,9 @@ pub(crate) struct DropletArgs {
     /// Retain per-chunk and merged BAM (overrides the configuration).
     #[arg(long)]
     pub keep_bam: bool,
-    /// Internal: run only the FASTQ index and barcode prepass.
-    #[arg(long, hide = true)]
-    pub prepass_only: bool,
+    /// Internal: run only the FASTQ index and barcode preprocessing.
+    #[arg(long, hide = true, alias = "prepass-only")]
+    pub barcode_preprocessing_only: bool,
     #[command(flatten, next_help_heading = "Slurm options")]
     pub slurm: run::SlurmOptions,
 }

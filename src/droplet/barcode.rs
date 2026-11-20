@@ -43,7 +43,7 @@ impl BarcodeStats {
     }
 }
 
-pub(crate) struct Prepass {
+pub(crate) struct BarcodePreprocessing {
     #[allow(dead_code)]
     pub dir: PathBuf,
     #[allow(dead_code)]
@@ -53,7 +53,7 @@ pub(crate) struct Prepass {
     pub orientation: &'static str,
 }
 
-impl Prepass {
+impl BarcodePreprocessing {
     #[allow(dead_code)]
     pub(crate) fn sidecar(&self, chunk: usize) -> PathBuf {
         self.dir.join(format!("chunk-{chunk:04}.tsv"))
@@ -351,7 +351,7 @@ fn open_barcode_read(path: &Path, threads: u32) -> Result<Box<dyn BufRead>> {
 
 /// Guess orientation on a small prefix of R2 by counting exact matches.
 fn detect_orientation(c: &DropletConfig) -> Result<&'static str> {
-    let mut reader = open_barcode_read(&c.barcode_read, c.barcode.threads)?;
+    let mut reader = open_barcode_read(&c.barcode_read, c.barcode.matcher_threads)?;
     let (matcher_rc, matcher_fw) = (
         Matcher::load(c, "rc")?,
         Matcher::load(c, "forward")?,
@@ -452,7 +452,7 @@ fn flush_block(
     Ok(n)
 }
 
-pub(crate) fn prepass(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> Result<Prepass> {
+pub(crate) fn preprocess(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> Result<BarcodePreprocessing> {
     let stats_path = dir.join("stats.json");
     if c.reuse_barcodes && stats_path.is_file() {
         #[derive(Deserialize)]
@@ -489,7 +489,7 @@ pub(crate) fn prepass(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> R
                 total.add(s);
             }
             eprintln!("event=barcode_reuse chunks={}", index.chunks);
-            return Ok(Prepass {
+            return Ok(BarcodePreprocessing {
                 dir: dir.to_path_buf(),
                 chunks: index.chunks,
                 stats: saved.stats,
@@ -514,10 +514,10 @@ pub(crate) fn prepass(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> R
     let mut stats = vec![BarcodeStats::default(); index.chunks];
     let mut writer =
         BufWriter::with_capacity(1024 * 1024, File::create(dir.join("chunk-0000.tsv"))?);
-    let decode_threads = c.barcode.threads.clamp(1, 4);
+    let decode_threads = c.barcode.matcher_threads.clamp(1, 4);
     let mut reader = open_barcode_read(&c.barcode_read, decode_threads)?;
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(c.barcode.threads as usize)
+        .num_threads(c.barcode.matcher_threads as usize)
         .build()
         .context("build barcode matcher thread pool")?;
     let mut data: Vec<u8> = Vec::with_capacity(PREPASS_BLOCK * 160);
@@ -613,16 +613,15 @@ pub(crate) fn prepass(c: &DropletConfig, index: &IndexManifest, dir: &Path) -> R
         })?,
     )?;
     eprintln!(
-        "event=barcode_done total={} exact={} corrected={} ambiguous={} poly_g={} unassigned={} elapsed_seconds={:.3}",
+        "event=barcode_done total={} exact_match={} match_within_threshold={} ambiguous={} unassigned={} elapsed_seconds={:.3}",
         total.total,
         total.exact,
         total.corrected,
         total.ambiguous,
-        total.poly_g,
-        total.unassigned,
+        total.unassigned + total.poly_g,
         started.elapsed().as_secs_f64()
     );
-    Ok(Prepass {
+    Ok(BarcodePreprocessing {
         dir: dir.to_path_buf(),
         chunks: index.chunks,
         stats,

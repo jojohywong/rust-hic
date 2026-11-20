@@ -1,6 +1,6 @@
 //! Slurm job-array execution for the droplet (3-read) pipeline.
 //!
-//! Phases: `prepare` (FASTQ index + barcode prepass), `chunk` (one array task
+//! Phases: `prepare` (FASTQ index + barcode preprocessing), `chunk` (one array task
 //! per chunk: fastp + align + parse), and `finish` (merge, sort, per-cell
 //! dedup, QC, matrix). The scheduler plumbing — `sbatch`, scripts, logs,
 //! `slurm-jobs.json` — is the same code the bulk v0.5.0 pipeline uses.
@@ -66,11 +66,21 @@ fn plan_chunks(c: &DropletConfig) -> Result<usize> {
 fn job_cpus(c: &DropletConfig, args: &SlurmOptions) -> (usize, usize, usize) {
     let prepare = args
         .index_cpus
-        .unwrap_or_else(|| 8usize.max(c.barcode.threads as usize))
+        .unwrap_or_else(|| {
+            (c.barcode.matcher_threads as usize
+                + c.barcode.matcher_threads.min(4) as usize
+                + 2)
+                .max(8)
+        })
         .max(1);
+    // The local droplet path uses two reader threads per chunk (R1 + R3);
+    // the Slurm chunk task still uses the older single-stream reader, so it
+    // only needs one thread per mate (see the note in the README).
+    // Local droplet chunks read R1 and R3 as paired FIFOs: two reader pools.
+    let reader_threads = 2 * c.fastq_reader_threads as usize;
     let chunk = args
         .map_cpus
-        .unwrap_or(c.threads_per_job + c.fastp_threads + 4)
+        .unwrap_or(c.threads_per_job + c.fastp_threads + reader_threads + 2)
         .max(1);
     let finish_base = c
         .sort_threads
@@ -104,7 +114,7 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
 
     if check {
         println!(
-            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: prepare (index + barcode prepass) -> chunk array -> finish (merge/sort/dedup/QC/matrix)",
+            "Droplet Slurm configuration valid\n  Output: {}\n  Chunks: {} (up to {} concurrent)\n  CPUs per job: prepare {}, chunk {}, finish {}\n  Memory per job: prepare {}, chunk {}, finish {}\n  Phases: prepare (index + barcode preprocessing) -> chunk array -> finish (merge/sort/dedup/QC/matrix)",
             c.output_dir.display(),
             chunks,
             parallel,
@@ -152,14 +162,33 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
     serde_yaml::to_writer(File::create(&plan_path)?, &plan)?;
     fs::write(out.join("work-dir.txt"), format!("{}\n", work.display()))?;
 
-    write_task_script(
-        &work.join("prepare.sh"),
-        &exe,
-        "droplet-slurm-task",
-        "prepare",
-        &plan_path,
-        false,
-    )?;
+    if plan.config.cell_barcode_process_mode == "post" {
+        write_task_script(
+            &work.join("index.sh"),
+            &exe,
+            "droplet-slurm-task",
+            "index",
+            &plan_path,
+            false,
+        )?;
+        write_task_script(
+            &work.join("preprocess.sh"),
+            &exe,
+            "droplet-slurm-task",
+            "barcode-preprocessing",
+            &plan_path,
+            false,
+        )?;
+    } else {
+        write_task_script(
+            &work.join("prepare.sh"),
+            &exe,
+            "droplet-slurm-task",
+            "prepare",
+            &plan_path,
+            false,
+        )?;
+    }
     write_task_script(
         &work.join("chunk.sh"),
         &exe,
@@ -184,66 +213,141 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
         group_id: Some(group_id),
         chunks,
         index: None,
+        preprocessing: None,
         alignment: None,
         finish: None,
     };
     write_json(&jobs_file, &jobs)?;
 
+    let post = plan.config.cell_barcode_process_mode == "post";
     let mut submitted = Vec::new();
     let result = (|| -> Result<()> {
-        let id = sbatch_named(
-            &args,
-            "rust-hic-droplet-prepare",
-            "droplet prepare",
-            &logs.join("prepare-%j.log"),
-            prepare_cpus,
-            prepare_mem,
-            args.index_time.as_deref().unwrap_or(time),
-            None,
-            None,
-            &work.join("prepare.sh"),
-            false,
-        )?;
-        submitted.push(id.clone());
-        jobs.index = Some(id.clone());
-        write_json(&jobs_file, &jobs)?;
-
         let array = format!("0-{}%{parallel}", chunks - 1);
-        let id = sbatch_named(
-            &args,
-            "rust-hic-droplet-chunk",
-            "droplet chunk array",
-            &logs.join("chunk-%A_%a.log"),
-            chunk_cpus,
-            chunk_mem,
-            args.map_time.as_deref().unwrap_or(time),
-            Some(&format!("afterok:{}", jobs.index.as_deref().unwrap_or_default())),
-            Some(&array),
-            &work.join("chunk.sh"),
-            false,
-        )?;
-        submitted.push(id.clone());
-        jobs.alignment = Some(id.clone());
-        write_json(&jobs_file, &jobs)?;
-        // The shared submitter holds arrays until task names are assigned.
-        release_array(&id)?;
+        if post {
+            // index -> (chunks || barcode preprocessing) -> join + finish
+            let index_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-index",
+                "droplet FASTQ index",
+                &logs.join("index-%j.log"),
+                prepare_cpus,
+                prepare_mem,
+                args.index_time.as_deref().unwrap_or(time),
+                None,
+                None,
+                &work.join("index.sh"),
+                false,
+            )?;
+            submitted.push(index_id.clone());
+            jobs.index = Some(index_id.clone());
+            write_json(&jobs_file, &jobs)?;
 
-        let id = sbatch_named(
-            &args,
-            "rust-hic-droplet-finish",
-            "droplet final processing",
-            &logs.join("finish-%j.log"),
-            finish_cpus,
-            finish_mem,
-            args.finish_time.as_deref().unwrap_or(time),
-            Some(&format!("afterany:{id}")),
-            None,
-            &work.join("finish.sh"),
-            true,
-        )?;
-        submitted.push(id.clone());
-        jobs.finish = Some(id);
-        write_json(&jobs_file, &jobs)?;
+            let array_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-chunk",
+                "droplet chunk array",
+                &logs.join("chunk-%A_%a.log"),
+                chunk_cpus,
+                chunk_mem,
+                args.map_time.as_deref().unwrap_or(time),
+                Some(&format!("afterok:{index_id}")),
+                Some(&array),
+                &work.join("chunk.sh"),
+                false,
+            )?;
+            submitted.push(array_id.clone());
+            jobs.alignment = Some(array_id.clone());
+            write_json(&jobs_file, &jobs)?;
+            release_array(&array_id)?;
+
+            let preprocessing_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-preprocess",
+                "droplet barcode preprocessing",
+                &logs.join("preprocess-%j.log"),
+                prepare_cpus,
+                prepare_mem,
+                args.index_time.as_deref().unwrap_or(time),
+                Some(&format!("afterok:{index_id}")),
+                None,
+                &work.join("preprocess.sh"),
+                false,
+            )?;
+            submitted.push(preprocessing_id.clone());
+            jobs.preprocessing = Some(preprocessing_id.clone());
+            write_json(&jobs_file, &jobs)?;
+
+            let finish_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-finish",
+                "droplet final processing",
+                &logs.join("finish-%j.log"),
+                finish_cpus,
+                finish_mem,
+                args.finish_time.as_deref().unwrap_or(time),
+                Some(&format!(
+                    "afterok:{preprocessing_id},afterany:{array_id}"
+                )),
+                None,
+                &work.join("finish.sh"),
+                true,
+            )?;
+            submitted.push(finish_id.clone());
+            jobs.finish = Some(finish_id);
+            write_json(&jobs_file, &jobs)?;
+        } else {
+            let prepare_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-prepare",
+                "droplet prepare",
+                &logs.join("prepare-%j.log"),
+                prepare_cpus,
+                prepare_mem,
+                args.index_time.as_deref().unwrap_or(time),
+                None,
+                None,
+                &work.join("prepare.sh"),
+                false,
+            )?;
+            submitted.push(prepare_id.clone());
+            jobs.index = Some(prepare_id.clone());
+            write_json(&jobs_file, &jobs)?;
+
+            let array_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-chunk",
+                "droplet chunk array",
+                &logs.join("chunk-%A_%a.log"),
+                chunk_cpus,
+                chunk_mem,
+                args.map_time.as_deref().unwrap_or(time),
+                Some(&format!("afterok:{prepare_id}")),
+                Some(&array),
+                &work.join("chunk.sh"),
+                false,
+            )?;
+            submitted.push(array_id.clone());
+            jobs.alignment = Some(array_id.clone());
+            write_json(&jobs_file, &jobs)?;
+            release_array(&array_id)?;
+
+            let finish_id = sbatch_named(
+                &args,
+                "rust-hic-droplet-finish",
+                "droplet final processing",
+                &logs.join("finish-%j.log"),
+                finish_cpus,
+                finish_mem,
+                args.finish_time.as_deref().unwrap_or(time),
+                Some(&format!("afterany:{array_id}")),
+                None,
+                &work.join("finish.sh"),
+                true,
+            )?;
+            submitted.push(finish_id.clone());
+            jobs.finish = Some(finish_id);
+            write_json(&jobs_file, &jobs)?;
+        }
         Ok(())
     })();
     if let Err(e) = result {
@@ -255,9 +359,10 @@ pub(crate) fn submit(config: &Path, args: SlurmOptions, check: bool, keep_bam: b
     }
 
     println!(
-        "Submitted droplet Slurm workflow\n  Output: {}\n  Prepare job: {}\n  Chunk array: {} ({} chunks, up to {} concurrent)\n  Finish job: {}\n  Status: rust-hic run status {}\n  Logs: {}",
+        "Submitted droplet Slurm workflow\n  Output: {}\n  Index/prepare job: {}\n  Barcode preprocessing job: {}\n  Chunk array: {} ({} chunks, up to {} concurrent)\n  Finish/join job: {}\n  Status: rust-hic run status {}\n  Logs: {}",
         out.display(),
         jobs.index.as_deref().unwrap_or("?"),
+        jobs.preprocessing.as_deref().unwrap_or("-"),
         jobs.alignment.as_deref().unwrap_or("?"),
         chunks,
         parallel,
@@ -280,6 +385,8 @@ pub(crate) fn task(phase: &str, plan_path: &Path, chunk: Option<usize>) -> Resul
     clear_failure(&plan.output, phase)?;
     let result = match phase {
         "prepare" => prepare(&plan),
+        "index" => index_phase(&plan),
+        "barcode-preprocessing" => barcode_preprocessing_phase(&plan),
         "chunk" => chunk_task(
             &plan,
             chunk.context("droplet Slurm chunk task requires a chunk index")?,
@@ -294,6 +401,11 @@ pub(crate) fn task(phase: &str, plan_path: &Path, chunk: Option<usize>) -> Resul
 }
 
 fn prepare(plan: &SlurmPlan) -> Result<()> {
+    index_phase(plan)?;
+    barcode_preprocessing_phase(plan)
+}
+
+fn index_phase(plan: &SlurmPlan) -> Result<()> {
     let c = &plan.config;
     run::create_dirs(c)?;
     let logs = c.output_dir.join("logs");
@@ -306,15 +418,32 @@ fn prepare(plan: &SlurmPlan) -> Result<()> {
             plan.chunks
         )
     }
-    let prepass = barcode::prepass(c, &manifest, &c.scratch().join("barcodes"))?;
-    run::write_barcode_qc(&prepass, &c.output_dir.join("qc"))?;
+    eprintln!("event=droplet_slurm_index chunks={}", manifest.chunks);
+    Ok(())
+}
+
+fn barcode_preprocessing_phase(plan: &SlurmPlan) -> Result<()> {
+    let c = &plan.config;
+    run::create_dirs(c)?;
+    let logs = c.output_dir.join("logs");
+    let index_dir = crate::droplet::index::ensure_index(c, &logs.join("fastq-index.log"))?;
+    let manifest = IndexManifest::load(&index_dir)?;
+    if manifest.chunks != plan.chunks {
+        bail!(
+            "FASTQ index produced {} chunks but the Slurm array was submitted with {}; resubmit to rebuild the array",
+            manifest.chunks,
+            plan.chunks
+        )
+    }
+    let preprocessing = barcode::preprocess(c, &manifest, &c.scratch().join("barcodes"))?;
+    run::write_barcode_qc(&preprocessing, &c.output_dir.join("qc"))?;
     eprintln!(
-        "event=droplet_slurm_prepare chunks={} assignable={}",
+        "event=droplet_slurm_barcode_preprocessing chunks={} assignable={}",
         manifest.chunks,
-        prepass
+        preprocessing
             .total
             .exact
-            .saturating_add(prepass.total.corrected)
+            .saturating_add(preprocessing.total.corrected)
     );
     Ok(())
 }
@@ -339,7 +468,7 @@ fn chunk_task(plan: &SlurmPlan, chunk: usize) -> Result<()> {
         &index_dir,
         &sidecar_dir,
         chunk,
-        c.cb_join != "post",
+        c.cell_barcode_process_mode != "post",
         plan.keep_bam,
         &chunk_dir,
         &logs,

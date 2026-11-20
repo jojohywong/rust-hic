@@ -477,6 +477,7 @@ pub(crate) fn submit(
         group_id: Some(group_id.clone()),
         chunks,
         index: None,
+        preprocessing: None,
         alignment: None,
         finish: None,
     };

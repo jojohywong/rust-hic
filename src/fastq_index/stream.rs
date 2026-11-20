@@ -9,12 +9,13 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 fn open_paired_readers(
     out: &Path,
     chunk: usize,
+    threads: u32,
 ) -> Result<[io::Take<rapidgzip::RapidgzipReader>; 2]> {
     let m: Manifest = serde_json::from_reader(File::open(out.join("manifest.json"))?)?;
     if m.version != 1
@@ -49,7 +50,7 @@ fn open_paired_readers(
         let length = end
             .checked_sub(start)
             .context("invalid FASTQ chunk boundaries")?;
-        let reader = open_indexed_reader(input, out, start, 1)?;
+        let reader = open_indexed_reader(input, out, start, threads)?;
         readers.push(reader.take(length));
     }
     readers
@@ -106,7 +107,7 @@ impl PairedFastqReader {
     pub fn open(index: &Path, chunk: usize) -> Result<Self> {
         Ok(Self {
             paired: PairedRecords::new(
-                open_paired_readers(index, chunk)?.map(|r| BufReader::with_capacity(128 * 1024, r)),
+                open_paired_readers(index, chunk, 1)?.map(|r| BufReader::with_capacity(128 * 1024, r)),
             ),
         })
     }
@@ -148,10 +149,23 @@ pub(crate) fn stream_paired<W: Write>(
     output: W,
     cancel: &AtomicBool,
 ) -> Result<u64> {
+    stream_paired_with_threads(out, chunk, output, cancel, 1)
+}
+
+pub(crate) fn stream_paired_with_threads<W: Write>(
+    out: &Path,
+    chunk: usize,
+    output: W,
+    cancel: &AtomicBool,
+    threads: u32,
+) -> Result<u64> {
     let mut paired = PairedRecords::new(
-        open_paired_readers(out, chunk)?.map(|reader| BufReader::with_capacity(128 * 1024, reader)),
+        open_paired_readers(out, chunk, threads)?
+            .map(|reader| BufReader::with_capacity(4 * 1024 * 1024, reader)),
     );
-    let mut writer = BufWriter::with_capacity(128 * 1024, output);
+    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, output);
+    let started = Instant::now();
+    let mut logged = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
             bail!("FASTQ stream cancelled")
@@ -165,6 +179,17 @@ pub(crate) fn stream_paired<W: Write>(
         }
         writer.write_all(&paired.records[0])?;
         writer.write_all(&paired.records[1])?;
+        if paired.pairs >= logged + 5_000_000 {
+            logged = paired.pairs;
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            eprintln!(
+                "event=fastq_reader_progress pairs={} threads={} elapsed_s={:.1} rate={:.0}/s",
+                paired.pairs,
+                threads,
+                secs,
+                paired.pairs as f64 / secs
+            );
+        }
     }
 }
 
@@ -176,6 +201,7 @@ pub(crate) fn stream_split(
     chunk: usize,
     paths: [&Path; 2],
     cancel: &AtomicBool,
+    threads: u32,
 ) -> Result<[u64; 2]> {
     const BUFFER_SIZE: usize = 128 * 1024;
     struct Spill {
@@ -255,7 +281,7 @@ pub(crate) fn stream_split(
         }
     }
     let mut paired = PairedRecords::new(
-        open_paired_readers(out, chunk)?
+        open_paired_readers(out, chunk, threads)?
             .map(|reader| BufReader::with_capacity(BUFFER_SIZE, reader)),
     );
     let make = |path: &Path| Mate {

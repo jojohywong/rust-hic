@@ -48,9 +48,9 @@ output_dir: new-result  # Must not already exist; its parent must exist.
 #   prefix: GM12878_100M
 scratch_dir: .  # Existing writable directory for intermediate files.
 # merge_scratch_dir: /path/to/existing/scratch  # Defaults to scratch_dir.
-keep_pairs: false  # Retain the final uncompressed pairs file.
+keep_pairs: false  # Retain the final pairs (format chosen by compressed_pairs).
 keep_bam: false  # Retain aligner-emitted records in one unsorted BAM.
-compressed_pairs: false  # Retain a compressed pairs file and pairix index.
+compressed_pairs: false  # Keep pairs as .pairs.gz + .px2; supersedes the plain file.
 dedup_max_mismatch: 3  # pairtools default; use 1 for runHiC's setting.
 
 # Limits are per stage, not a single process-wide CPU limit.
